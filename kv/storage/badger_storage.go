@@ -49,32 +49,26 @@ func (s *badgerReader) Close() {
 
 func (s *BadgerStorage) Write(ctx *kvrpcpb.Context, batch []Modify) error {
 	db := s.badgerInstance
-
-	err := db.Update(func(txn *badger.Txn) error {
-		for _, m := range batch {
-
-			switch data := m.Data.(type) {
-			case Put:
-
-				cfKey := toCFKey(string(data.Key), []byte(data.Cf))
-				err := txn.Set(cfKey, data.Value)
-				if err != nil {
-					return err
-				}
-			case Delete:
-				key := data.Key
-				cf := data.Cf
-				cfKey := toCFKey(cf, key)
-				err := txn.Delete(cfKey)
-				if err != nil {
-					return err
-				}
+	txn := db.NewTransaction(true)
+	// Use the transaction...
+	for _, m := range batch {
+		switch data := m.Data.(type) {
+		case Put:
+			cfKey := toCFKey(data.Cf, data.Key)
+			err := txn.Set(cfKey, data.Value)
+			if err != nil {
+				return err
+			}
+		case Delete:
+			cfKey := toCFKey(data.Cf, data.Key)
+			err := txn.Delete(cfKey)
+			if err != nil {
+				return err
 			}
 		}
-		return nil
-	})
-
-	if err != nil {
+	}
+	// Commit the transaction and check for error.
+	if err := txn.Commit(); err != nil {
 		return err
 	} else {
 		return nil
@@ -94,19 +88,19 @@ func toCFKey(cf string, key []byte) []byte {
 }
 
 type badgerIterator struct {
-	it *badger.Iterator
-	cf []byte
+	it  *badger.Iterator
+	cf  []byte
+	txn *badger.Txn
 }
 
 func (br *badgerReader) IterCF(cf string) engine_util.DBIterator {
 	db := br.inner.badgerInstance
 	res := badgerIterator{}
-	db.View(func(txn *badger.Txn) error {
-		res.it = txn.NewIterator(badger.DefaultIteratorOptions)
-		return nil
-	})
+	txn := db.NewTransaction(false)
+	res.it = txn.NewIterator(badger.DefaultIteratorOptions)
 	res.cf = []byte(cf)
 	res.Seek(res.cf)
+	res.txn = txn
 	return &res
 }
 
@@ -118,25 +112,28 @@ func (br *badgerReader) GetCF(cf string, key []byte) ([]byte, error) {
 	cfKey := toCFKey(cf, key)
 	var result []byte
 
-	// 在数据库事务中执行读取操作
-	err := db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(cfKey)
-		if err != nil {
-			return err
+	// Start a writable transaction.
+	txn := db.NewTransaction(false)
+	// 读 Key Value
+	item, err := txn.Get(cfKey)
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, nil
 		}
-
-		// 从 Item 中读取值
-		val, err := item.Value()
-		if err != nil {
-			return err
-		}
-
-		// 将值追加到结果中
-		result = append(result, val...)
-		return nil
-	})
-
-	return result, err
+		return nil, err
+	}
+	// 读 Value
+	val, err := item.Value()
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, val...)
+	// Commit the transaction and check for error.
+	if err := txn.Commit(); err != nil {
+		return nil, err
+	} else {
+		return result, nil
+	}
 }
 
 // Item returns pointer to the current key-value pair.
@@ -166,6 +163,8 @@ func (it *badgerIterator) Seek([]byte) {
 // Close the iterator
 func (it *badgerIterator) Close() {
 	it.it.Close()
+	it.txn.Commit()
+
 }
 
 type badgerItem struct {

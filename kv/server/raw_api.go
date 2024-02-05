@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
+	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 )
 
@@ -26,12 +27,23 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 			Error:       err.Error(),
 		}, err
 	}
-	// Assuming RawGetResponse has a Value field for the result
-	return &kvrpcpb.RawGetResponse{
-		RegionError: nil, // Assuming RegionError is a field in RawGetResponse
-		Error:       "",  // No error, set to empty string
-		Value:       val,
-	}, nil
+
+	if val == nil {
+		return &kvrpcpb.RawGetResponse{
+			RegionError: nil, // Assuming RegionError is a field in RawGetResponse
+			Error:       "",  // No error, set to empty string
+			Value:       val,
+			NotFound:    true,
+		}, nil
+	} else {
+		return &kvrpcpb.RawGetResponse{
+
+			RegionError: nil, // Assuming RegionError is a field in RawGetResponse
+			Error:       "",  // No error, set to empty string
+			Value:       val,
+		}, nil
+	}
+
 }
 
 // RawPut puts the target data into storage and returns the corresponding response
@@ -84,6 +96,43 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 			Error:       err.Error(), // No error, set to empty string
 		}, err
 	}
-	reader.IterCF(req.Cf)
-	return nil, nil
+	kvs, err := scanIterator(req, reader)
+
+	if err != nil {
+		return &kvrpcpb.RawScanResponse{
+			RegionError: nil,         // Assuming RegionError is a field in RawGetResponse
+			Error:       err.Error(), // No error, set to empty string
+		}, err
+
+	}
+	reader.Close()
+
+	return &kvrpcpb.RawScanResponse{
+		RegionError: nil, // Assuming RegionError is a field in RawGetResponse
+		Kvs:         kvs,
+	}, err
+
+}
+
+func scanIterator(req *kvrpcpb.RawScanRequest, reader storage.StorageReader) (kvs []*kvrpcpb.KvPair, err error) {
+	var res []*kvrpcpb.KvPair
+	idx := 0
+	log.Infof("request: %+v", req)
+	it := reader.IterCF(req.Cf)
+	for ; it.Valid() && uint32(idx) < req.Limit; it.Next() {
+		item := it.Item()
+		key := item.Key()
+		//if bytes.Compare(key, req.StartKey) < 0 {
+		//	continue
+		//}
+		value, err := item.Value()
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, &kvrpcpb.KvPair{Key: key, Value: value, Error: nil})
+		log.Infof("item %d: %+v", idx, res[idx])
+		idx++
+	}
+	it.Close()
+	return res, nil
 }
