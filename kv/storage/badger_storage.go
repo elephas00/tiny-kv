@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/Connor1996/badger"
 	"github.com/Connor1996/badger/y"
 	"github.com/petar/GoLLRB/llrb"
@@ -136,9 +137,23 @@ func (br *badgerReader) GetCF(cf string, key []byte) ([]byte, error) {
 	}
 }
 
+// extractCFAndKey 从带有 CF 前缀的键中提取原始的 Column Family 和 Key
+func extractCFAndKey(cfKey []byte) (string, []byte, error) {
+	parts := bytes.SplitN(cfKey, []byte("_"), 2)
+	if len(parts) != 2 {
+		return "", nil, fmt.Errorf("invalid CF key format: %s", cfKey)
+	}
+
+	cf := string(parts[0])
+	key := parts[1]
+
+	return cf, key, nil
+}
+
 // Item returns pointer to the current key-value pair.
 func (it *badgerIterator) Item() engine_util.DBItem {
-	key := it.it.Item().Key()
+	keyWithCF := it.it.Item().Key()
+	_, key, _ := extractCFAndKey(keyWithCF)
 	val, _ := it.it.Item().Value()
 	return badgerItem{key, val, true}
 }
