@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
@@ -121,18 +123,35 @@ func scanIterator(req *kvrpcpb.RawScanRequest, reader storage.StorageReader) (kv
 	it := reader.IterCF(req.Cf)
 	for ; it.Valid() && uint32(idx) < req.Limit; it.Next() {
 		item := it.Item()
-		key := item.Key()
+		keyWithCF := item.Key()
 		//if bytes.Compare(key, req.StartKey) < 0 {
 		//	continue
 		//}
+		_, key, _ := extractCFAndKey(keyWithCF)
 		value, err := item.Value()
 		if err != nil {
 			return nil, err
 		}
-		res = append(res, &kvrpcpb.KvPair{Key: key, Value: value, Error: nil})
-		log.Infof("item %d: %+v", idx, res[idx])
-		idx++
+		if value != nil && len(value) > 0 {
+			res = append(res, &kvrpcpb.KvPair{Key: key, Value: value, Error: nil})
+			log.Infof("item %d: %+v", idx, res[idx])
+			idx++
+		}
+
 	}
 	it.Close()
 	return res, nil
+}
+
+// extractCFAndKey 从带有 CF 前缀的键中提取原始的 Column Family 和 Key
+func extractCFAndKey(cfKey []byte) (string, []byte, error) {
+	parts := bytes.SplitN(cfKey, []byte("_"), 2)
+	if len(parts) != 2 {
+		return "", nil, fmt.Errorf("invalid CF key format: %s", cfKey)
+	}
+
+	cf := string(parts[0])
+	key := parts[1]
+
+	return cf, key, nil
 }
