@@ -74,7 +74,7 @@ type RawNode struct {
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
-	// Your Code Here (2A).
+	// TODO: Your Code Here (2A).
 	return nil, nil
 }
 
@@ -142,20 +142,20 @@ func (rn *RawNode) Step(m pb.Message) error {
 
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
-	// Your Code Here (2A).
+	// TODO: Your Code Here (2A).
 	return Ready{}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
-	// Your Code Here (2A).
+	// TODO: Your Code Here (2A).
 	return false
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	// Your Code Here (2A).
+	// TODO: Your Code Here (2A).
 }
 
 // GetProgress return the Progress of this node and its peers, if this
