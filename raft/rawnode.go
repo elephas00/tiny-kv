@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -144,7 +143,41 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// TODO: Your Code Here (2A).
-	return Ready{}
+	var hardState pb.HardState
+	initialState, _, _ := rn.Raft.RaftLog.storage.InitialState()
+	if initialState.Term == rn.Raft.Term &&
+		initialState.Vote == rn.Raft.Vote &&
+		initialState.Commit == rn.Raft.RaftLog.committed {
+		// do nothing
+	} else {
+		hardState.Term = rn.Raft.Term
+		hardState.Vote = rn.Raft.Vote
+		hardState.Commit = rn.Raft.RaftLog.committed
+	}
+
+	entries := rn.Raft.RaftLog.unstableEntries()
+	commitedEntries := rn.Raft.RaftLog.nextEnts()
+	msgs := rn.Raft.msgs
+	peers := make([]uint64, 0)
+	for id := range rn.Raft.Prs {
+		peers = append(peers, id)
+	}
+
+	//snapshot := pb.Snapshot{
+	//	Metadata: &pb.SnapshotMetadata{
+	//		Index:     rn.Raft.RaftLog.committed,
+	//		Term:      rn.Raft.Term,
+	//		ConfState: &pb.ConfState{Nodes: peers},
+	//	},
+	//}
+	ready := Ready{
+		HardState:        hardState,
+		Entries:          entries,
+		CommittedEntries: commitedEntries,
+		//Snapshot:         snapshot,
+		Messages: msgs,
+	}
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
@@ -157,6 +190,17 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// TODO: Your Code Here (2A).
+	raft := rn.Raft
+	if size := len(rd.Entries); size > 0 {
+		raft.RaftLog.stabled = rd.Entries[size-1].Index
+	}
+	if size := len(rd.CommittedEntries); size > 0 {
+		raft.RaftLog.applied = rd.CommittedEntries[size-1].Index
+	}
+	if size := len(rd.Messages); size > 0 {
+		// clear messages in ready.
+		raft.msgs = make([]pb.Message, 0)
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
