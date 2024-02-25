@@ -2,6 +2,8 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/golang/protobuf/proto"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -38,11 +40,46 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
+func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
+	raftMsg := rspb.RaftMessage{
+		RegionId:    d.regionId,
+		FromPeer:    d.peer.Meta,
+		ToPeer:      &metapb.Peer{Id: msg.To, StoreId: msg.To},
+		Message:     &msg,
+		RegionEpoch: d.Region().RegionEpoch,
+	}
+	err := d.ctx.trans.Send(&raftMsg)
+	return err
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
 	}
 	// Your Code Here (2B).
+
+	// 1.obtain ready rd.
+	rd := d.RaftGroup.Ready()
+
+	// 2. persist entries, call SaveReadyState
+	_, err := d.peerStorage.SaveReadyState(&rd)
+	if err != nil {
+		log.Errorf("faild to save ready state %+v, err: %+v", rd, err)
+	}
+
+	// 3. send message to peers.
+	for _, msg := range rd.Messages {
+		err := d.sendRaftMessage(msg)
+		if err != nil {
+			log.Errorf("failed to send raft message: %+v", err)
+		}
+	}
+
+	// TODO: 4. apply committed entries exec write cmd and and get cmd.
+
+	// 5. modify in memory data, advance.
+	d.RaftGroup.Advance(rd)
+
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +151,33 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+
+	// 1.storage callback to pendingCmd(proposals).
+	lastIndex, err := d.peerStorage.LastIndex()
+	if err != nil {
+		log.Errorf("failed to get last index: %+v", err)
+	}
+	term := d.peer.Term()
+	d.peer.proposals = append(d.peer.proposals, &proposal{
+		index: lastIndex + 1,
+		term:  term,
+		cb:    cb,
+	})
+
+	// 2. convert data to bytes.
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		cb.Done(ErrResp(err))
+		log.Errorf("failed to marshal raft command: %+v", err)
+		return
+	}
+
+	// propose command.
+	err = d.RaftGroup.Propose(data)
+	if err != nil {
+		log.Errorf("failed to propose raft command: %+v", err)
+	}
+
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -223,9 +287,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// / Checks if the message is sent to the correct peer.
+// /
+// / Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)

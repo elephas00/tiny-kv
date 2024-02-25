@@ -178,10 +178,10 @@ func newRaft(c *Config) *Raft {
 	}
 
 	// Initialize other fields...
-	raft.initPeers(c.peers)
-	raft.initVotes()
 	raft.initRaftLog(c)
+	raft.initPeers(c)
 	raft.initHardSate(c)
+	raft.initVotes()
 	log.Infof("new raft: %+v", raft)
 	return raft
 
@@ -194,10 +194,18 @@ func (r *Raft) initHardSate(c *Config) {
 	r.RaftLog.committed = hardState.Commit
 }
 
-func (r *Raft) initPeers(peers []uint64) {
+func (r *Raft) initPeers(c *Config) {
+	var peers []uint64
+	if len(c.peers) > 0 {
+		peers = c.peers
+	} else if _, confState, _ := c.Storage.InitialState(); len(confState.Nodes) > 0 {
+		peers = confState.Nodes
+	}
+
 	r.Prs = make(map[uint64]*Progress, len(peers))
-	for _, peerID := range peers {
-		r.Prs[peerID] = &Progress{Match: 0, Next: 1}
+	r.Prs[r.id] = &Progress{Match: 0, Next: 1}
+	for _, peer := range peers {
+		r.Prs[peer] = &Progress{Match: 0, Next: 1}
 	}
 }
 
