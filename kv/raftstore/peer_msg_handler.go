@@ -3,6 +3,7 @@ package raftstore
 import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"time"
 
@@ -52,6 +53,143 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 	return err
 }
 
+func (d *peerMsgHandler) findProposal(entry pb.Entry) (*proposal, bool) {
+	for _, prop := range d.proposals {
+		if prop.term == entry.Term && prop.index == entry.Index {
+			return prop, false
+		}
+	}
+	return nil, true
+}
+
+func (d *peerMsgHandler) executeGetRequest(get *raft_cmdpb.GetRequest) (*raft_cmdpb.GetResponse, error) {
+	kvStore := d.peerStorage.Engines.Kv
+	value, err := engine_util.GetCF(kvStore, get.GetCf(), get.GetKey())
+	if err != nil {
+		return nil, err
+	}
+	return &raft_cmdpb.GetResponse{Value: value}, nil
+}
+
+func (d *peerMsgHandler) processPutRequest(put *raft_cmdpb.PutRequest) (*raft_cmdpb.PutResponse, error) {
+	kvStore := d.peerStorage.Engines.Kv
+	err := engine_util.PutCF(kvStore, put.GetCf(), put.GetKey(), put.GetValue())
+
+	if err != nil {
+		return nil, err
+	} else {
+		return &raft_cmdpb.PutResponse{}, nil
+	}
+}
+
+func (d *peerMsgHandler) processDeleteRequest(delete *raft_cmdpb.DeleteRequest) (*raft_cmdpb.DeleteResponse, error) {
+	kvStore := d.peerStorage.Engines.Kv
+	err := engine_util.DeleteCF(kvStore, delete.GetCf(), delete.GetKey())
+	if err != nil {
+		return nil, err
+	} else {
+		return &raft_cmdpb.DeleteResponse{}, nil
+	}
+}
+
+func (d *peerMsgHandler) processSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*raft_cmdpb.SnapResponse, error) {
+
+	return &raft_cmdpb.SnapResponse{Region: d.Region()}, nil
+}
+
+func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdResponse {
+	var raftCmd raft_cmdpb.RaftCmdRequest
+	err := proto.Unmarshal(entry.Data, &raftCmd)
+	if err != nil {
+		return ErrResp(err)
+	}
+
+	var responses []*raft_cmdpb.Response
+	for _, req := range raftCmd.Requests {
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			resp, err := d.executeGetRequest(req.GetGet())
+			if err != nil {
+				// TODO: handle this error.
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Get,
+					Get:     resp,
+				})
+			} else {
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Get,
+					Get:     resp,
+				})
+			}
+
+		case raft_cmdpb.CmdType_Put:
+			resp, err := d.processPutRequest(req.GetPut())
+			if err != nil {
+				// TODO: handle this error.
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Put,
+					Put:     resp,
+				})
+			} else {
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Put,
+					Put:     resp,
+				})
+			}
+		case raft_cmdpb.CmdType_Delete:
+			resp, err := d.processDeleteRequest(req.GetDelete())
+			if err != nil {
+				// TODO: handle this error.
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Delete,
+					Delete:  resp,
+				})
+			} else {
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Delete,
+					Delete:  resp,
+				})
+			}
+		case raft_cmdpb.CmdType_Snap:
+			resp, err := d.processSnapRequest(req.GetSnap())
+			if err != nil {
+				// TODO: handle this error.
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Snap,
+					Snap:    resp,
+				})
+			} else {
+				responses = append(responses, &raft_cmdpb.Response{
+					CmdType: raft_cmdpb.CmdType_Snap,
+					Snap:    resp,
+				})
+			}
+
+		}
+	}
+	//log.Infof("raft store response %+v", responses)
+	if len(responses) == 0 {
+		return &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+	}
+	return &raft_cmdpb.RaftCmdResponse{
+		Header:    &raft_cmdpb.RaftResponseHeader{Error: nil},
+		Responses: responses,
+	}
+}
+
+func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
+	for _, entry := range committedEnts {
+		prop, notFound := d.findProposal(entry)
+		if notFound {
+			log.Errorf("failed to find proposal according to entry: %+v", entry)
+		} else {
+			resp := d.applyRaftCommand(entry)
+			prop.cb.Done(resp)
+		}
+	}
+	return nil
+}
+
 func (d *peerMsgHandler) HandleRaftReady() {
 	if d.stopped {
 		return
@@ -76,6 +214,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	// TODO: 4. apply committed entries exec write cmd and and get cmd.
+	err = d.applyRaftCmdToStateMachine(rd.CommittedEntries)
+	if err != nil {
+		log.Errorf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
+	}
 
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
