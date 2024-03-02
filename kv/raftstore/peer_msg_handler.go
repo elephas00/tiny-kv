@@ -160,6 +160,15 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 					Snap:    resp,
 				})
 			} else {
+				prop, notFound := d.findProposal(entry)
+				if notFound {
+					if d.IsLeader() {
+						log.Errorf("%d failed to find proposal: %+v", d.PeerId(), entry)
+					}
+				} else {
+					prop.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+				}
+
 				responses = append(responses, &raft_cmdpb.Response{
 					CmdType: raft_cmdpb.CmdType_Snap,
 					Snap:    resp,
@@ -168,7 +177,6 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 
 		}
 	}
-	log.Infof("raft store response %+v", responses)
 	if len(responses) == 0 {
 		return &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 	}
@@ -192,17 +200,10 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 		if d.IsLeader() {
 			prop, notFound := d.findProposal(entry)
 			if notFound {
-				log.Infof("proposals: %s", d.proposalStr())
-				log.Infof("entry: %+v", entry)
 				log.Errorf("failed to find proposal according to entry: %+v", entry)
 			} else {
-				log.Infof("proposals: %s", d.proposalStr())
-				log.Infof("entry: %+v", entry)
-				log.Errorf("success to find proposal according to entry: %+v", entry)
 				resp := d.applyRaftCommand(entry)
-				log.Infof("find entry %+v applied", entry.Index)
 				prop.cb.Done(resp)
-				log.Infof("find entry %+v applied", entry.Index)
 			}
 		} else {
 			d.applyRaftCommand(entry)
@@ -235,7 +236,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 	}
 
-	// TODO: 4. apply committed entries exec write cmd and and get cmd.
+	// 4. apply committed entries exec write cmd and get cmd.
 	err = d.applyRaftCmdToStateMachine(rd.CommittedEntries)
 	if err != nil {
 		log.Errorf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
@@ -243,17 +244,14 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
-
 	if size := len(rd.Entries); size > 0 {
 		d.peerStorage.raftState.LastIndex = rd.Entries[size-1].Index
 		d.peerStorage.raftState.LastTerm = rd.Entries[size-1].Term
-		log.Infof("rd first index: %d, rd last index: %d", rd.Entries[0].Index, rd.Entries[size-1].Index)
 	}
 	if size := len(rd.CommittedEntries); size > 0 {
 		d.peerStorage.raftState.HardState.Commit = rd.CommittedEntries[size-1].Index
 	}
 
-	//log.Infof("ready advanced: %+v", rd)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -341,13 +339,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 
 	// 1.storage callback to pendingCmd(proposals).
-	lastIndex, err := d.peerStorage.LastIndex()
-	if err != nil {
-		log.Errorf("failed to get last index: %+v", err)
-	}
-	term := d.peer.peerStorage.raftState.HardState.Term
-	if err != nil {
-		log.Errorf("failed to get last term: %+v", err)
+	var lastIndex, term uint64
+	rd := d.RaftGroup.Ready()
+
+	if size := len(rd.Entries); size > 0 {
+		lastIndex = rd.Entries[size-1].Index
+		term = rd.Entries[size-1].Term
+	} else {
+		log.Panic("failed to propose, there are no log in raft module.")
 	}
 
 	d.peer.proposals = append(d.peer.proposals, &proposal{
