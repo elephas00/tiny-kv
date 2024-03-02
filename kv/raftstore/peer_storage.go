@@ -355,8 +355,29 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		if err != nil {
 			return nil, err
 		}
+		// save hard state like vote, commit and term.
+
 	}
 
+	raftState := new(rspb.RaftLocalState)
+	raftState.HardState = new(eraftpb.HardState)
+	if len(ready.Entries) > 0 {
+		lastLogIndex := len(ready.Entries) - 1
+		raftState.LastIndex = ready.Entries[lastLogIndex].Index
+		raftState.LastTerm = ready.Entries[lastLogIndex].Term
+	} else {
+		raftState.LastIndex = ps.raftState.LastIndex
+		raftState.LastTerm = ps.raftState.LastTerm
+	}
+	//log.Infof("hard state: %+v", ready.HardState)
+	raftState.HardState.Commit = ready.HardState.Commit
+	raftState.HardState.Term = ready.HardState.Term
+	raftState.HardState.Vote = ready.HardState.Vote
+
+	err := engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), raftState)
+	if err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 

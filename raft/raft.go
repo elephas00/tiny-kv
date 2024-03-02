@@ -182,7 +182,7 @@ func newRaft(c *Config) *Raft {
 	raft.initPeers(c)
 	raft.initHardSate(c)
 	raft.initVotes()
-	log.Infof("new raft: %+v", raft)
+	// log.Infof("new raft: %+v", raft)
 	return raft
 
 }
@@ -236,7 +236,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	entries := r.RaftLog.entries[progress.Next:]
 
-	log.Infof("%s send append to %d, previous log index %d, previous log term %d.", r.nodeIdentifier(), to, prevLogIndex, prevLogTerm)
+	// log.Infof("%s send append to %d, previous log index %d, previous log term %d.", r.nodeIdentifier(), to, prevLogIndex, prevLogTerm)
 
 	ents := make([]*pb.Entry, len(entries))
 
@@ -466,7 +466,7 @@ func (r *Raft) handleFollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		if r.Term == m.Term && r.Lead == None && r.Vote == None && r.candidateIsMoreUpToDate(m) {
 			r.Vote = m.From
-			log.Infof("%s, leader %+v, vote node %d", r.nodeIdentifier(), r.Lead, m.From)
+			// log.Infof("%s, leader %+v, vote node %d", r.nodeIdentifier(), r.Lead, m.From)
 		}
 		r.sendVoteResponse(m.From, r.Vote != m.From)
 
@@ -512,7 +512,7 @@ func (r *Raft) checkVotes() {
 		r.becomeFollower(r.Term, None)
 		r.Vote = r.id
 	}
-	log.Infof("%s campaign result: vote(%d), veto(%d)", r.nodeIdentifier(), vote, veto)
+	// log.Infof("%s campaign result: vote(%d), veto(%d)", r.nodeIdentifier(), vote, veto)
 }
 
 func (r *Raft) handleCandidateStep(m pb.Message) error {
@@ -544,8 +544,8 @@ func (r *Raft) handleCandidateStep(m pb.Message) error {
 }
 
 func (r *Raft) nodeIdentifier() string {
-	pattern := "node %d (term %d, state %+v)"
-	return fmt.Sprintf(pattern, r.id, r.Term, r.State)
+	pattern := "node %d (term %d, state %+v, commit %+v)"
+	return fmt.Sprintf(pattern, r.id, r.Term, r.State, r.RaftLog.committed)
 }
 
 func (r *Raft) sendRequestVoteToPeers() {
@@ -624,12 +624,12 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		} else {
 			match := m.Index
 			r.updatePrs(m.From, match)
-			log.Infof("%s receive append response from %d, match index:%d", r.nodeIdentifier(), m.From, match)
+			// log.Infof("%s receive append response from %d, match index:%d", r.nodeIdentifier(), m.From, match)
 			r.updateCommit()
 		}
 
 	case pb.MessageType_MsgHeartbeatResponse:
-		log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
+		//// log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
 		if m.Term == r.Term && m.Index != r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
@@ -644,9 +644,9 @@ func (r *Raft) truncateRaftLog(end uint64) {
 	}
 	offset := r.RaftLog.entries[0].Index
 	endIndex := end - offset
-	log.Infof("before truncate last index is:%d", r.RaftLog.LastIndex())
+	// log.Infof("before truncate last index is:%d", r.RaftLog.LastIndex())
 	r.RaftLog.entries = r.RaftLog.entries[:endIndex]
-	log.Infof("after truncate last index is:%d", r.RaftLog.LastIndex())
+	// log.Infof("after truncate last index is:%d", r.RaftLog.LastIndex())
 	// roll back stabled entries.
 	if r.RaftLog.stabled > endIndex-1 {
 		r.RaftLog.stabled = endIndex - 1

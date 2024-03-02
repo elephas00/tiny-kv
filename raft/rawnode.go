@@ -190,6 +190,7 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// TODO: Your Code Here (2A).
+	//log.Infof("node %+v, commit:", rn.Raft.nodeIdentifier())
 	raft := rn.Raft
 	if size := len(rd.Entries); size > 0 {
 		raft.RaftLog.stabled = rd.Entries[size-1].Index

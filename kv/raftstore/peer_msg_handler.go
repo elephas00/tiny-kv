@@ -5,6 +5,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"strconv"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -71,7 +72,7 @@ func (d *peerMsgHandler) executeGetRequest(get *raft_cmdpb.GetRequest) (*raft_cm
 	return &raft_cmdpb.GetResponse{Value: value}, nil
 }
 
-func (d *peerMsgHandler) processPutRequest(put *raft_cmdpb.PutRequest) (*raft_cmdpb.PutResponse, error) {
+func (d *peerMsgHandler) executePutRequest(put *raft_cmdpb.PutRequest) (*raft_cmdpb.PutResponse, error) {
 	kvStore := d.peerStorage.Engines.Kv
 	err := engine_util.PutCF(kvStore, put.GetCf(), put.GetKey(), put.GetValue())
 
@@ -82,7 +83,7 @@ func (d *peerMsgHandler) processPutRequest(put *raft_cmdpb.PutRequest) (*raft_cm
 	}
 }
 
-func (d *peerMsgHandler) processDeleteRequest(delete *raft_cmdpb.DeleteRequest) (*raft_cmdpb.DeleteResponse, error) {
+func (d *peerMsgHandler) executeDeleteRequest(delete *raft_cmdpb.DeleteRequest) (*raft_cmdpb.DeleteResponse, error) {
 	kvStore := d.peerStorage.Engines.Kv
 	err := engine_util.DeleteCF(kvStore, delete.GetCf(), delete.GetKey())
 	if err != nil {
@@ -92,7 +93,7 @@ func (d *peerMsgHandler) processDeleteRequest(delete *raft_cmdpb.DeleteRequest) 
 	}
 }
 
-func (d *peerMsgHandler) processSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*raft_cmdpb.SnapResponse, error) {
+func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*raft_cmdpb.SnapResponse, error) {
 
 	return &raft_cmdpb.SnapResponse{Region: d.Region()}, nil
 }
@@ -123,7 +124,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 			}
 
 		case raft_cmdpb.CmdType_Put:
-			resp, err := d.processPutRequest(req.GetPut())
+			resp, err := d.executePutRequest(req.GetPut())
 			if err != nil {
 				// TODO: handle this error.
 				responses = append(responses, &raft_cmdpb.Response{
@@ -137,7 +138,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 				})
 			}
 		case raft_cmdpb.CmdType_Delete:
-			resp, err := d.processDeleteRequest(req.GetDelete())
+			resp, err := d.executeDeleteRequest(req.GetDelete())
 			if err != nil {
 				// TODO: handle this error.
 				responses = append(responses, &raft_cmdpb.Response{
@@ -151,7 +152,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 				})
 			}
 		case raft_cmdpb.CmdType_Snap:
-			resp, err := d.processSnapRequest(req.GetSnap())
+			resp, err := d.executeSnapRequest(req.GetSnap())
 			if err != nil {
 				// TODO: handle this error.
 				responses = append(responses, &raft_cmdpb.Response{
@@ -167,7 +168,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 
 		}
 	}
-	//log.Infof("raft store response %+v", responses)
+	log.Infof("raft store response %+v", responses)
 	if len(responses) == 0 {
 		return &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 	}
@@ -177,15 +178,36 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 	}
 }
 
+func (d *peerMsgHandler) proposalStr() string {
+	res := ""
+	for _, prop := range d.proposals {
+		res = res + "(" + strconv.FormatUint(prop.index, 10) + ":" + strconv.FormatUint(prop.term, 10) + ")" + ","
+	}
+	return res
+}
+
 func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
+
 	for _, entry := range committedEnts {
-		prop, notFound := d.findProposal(entry)
-		if notFound {
-			log.Errorf("failed to find proposal according to entry: %+v", entry)
+		if d.IsLeader() {
+			prop, notFound := d.findProposal(entry)
+			if notFound {
+				log.Infof("proposals: %s", d.proposalStr())
+				log.Infof("entry: %+v", entry)
+				log.Errorf("failed to find proposal according to entry: %+v", entry)
+			} else {
+				log.Infof("proposals: %s", d.proposalStr())
+				log.Infof("entry: %+v", entry)
+				log.Errorf("success to find proposal according to entry: %+v", entry)
+				resp := d.applyRaftCommand(entry)
+				log.Infof("find entry %+v applied", entry.Index)
+				prop.cb.Done(resp)
+				log.Infof("find entry %+v applied", entry.Index)
+			}
 		} else {
-			resp := d.applyRaftCommand(entry)
-			prop.cb.Done(resp)
+			d.applyRaftCommand(entry)
 		}
+
 	}
 	return nil
 }
@@ -222,6 +244,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
 
+	if size := len(rd.Entries); size > 0 {
+		d.peerStorage.raftState.LastIndex = rd.Entries[size-1].Index
+		d.peerStorage.raftState.LastTerm = rd.Entries[size-1].Term
+		log.Infof("rd first index: %d, rd last index: %d", rd.Entries[0].Index, rd.Entries[size-1].Index)
+	}
+	if size := len(rd.CommittedEntries); size > 0 {
+		d.peerStorage.raftState.HardState.Commit = rd.CommittedEntries[size-1].Index
+	}
+
+	//log.Infof("ready advanced: %+v", rd)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -294,18 +326,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	// Your Code Here (2B).
 
-	// 1.storage callback to pendingCmd(proposals).
-	lastIndex, err := d.peerStorage.LastIndex()
-	if err != nil {
-		log.Errorf("failed to get last index: %+v", err)
-	}
-	term := d.peer.Term()
-	d.peer.proposals = append(d.peer.proposals, &proposal{
-		index: lastIndex + 1,
-		term:  term,
-		cb:    cb,
-	})
-
 	// 2. convert data to bytes.
 	data, err := proto.Marshal(msg)
 	if err != nil {
@@ -318,6 +338,26 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
 		log.Errorf("failed to propose raft command: %+v", err)
+	}
+
+	// 1.storage callback to pendingCmd(proposals).
+	lastIndex, err := d.peerStorage.LastIndex()
+	if err != nil {
+		log.Errorf("failed to get last index: %+v", err)
+	}
+	term := d.peer.peerStorage.raftState.HardState.Term
+	if err != nil {
+		log.Errorf("failed to get last term: %+v", err)
+	}
+
+	d.peer.proposals = append(d.peer.proposals, &proposal{
+		index: lastIndex,
+		term:  term,
+		cb:    cb,
+	})
+
+	if d.IsLeader() {
+		log.Infof("%d append proposal at %+v", d.PeerId(), lastIndex)
 	}
 
 }
