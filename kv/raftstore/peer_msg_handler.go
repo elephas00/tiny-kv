@@ -227,10 +227,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 3. send message to peers.
 	for _, msg := range rd.Messages {
-		d.sendRaftMessage(msg)
-		//if err != nil {
-		//	//log.Errorf("failed to send raft message: %+v", err)
-		//}
+		_ = d.sendRaftMessage(msg)
 	}
 
 	// 4. apply committed entries exec write cmd and get cmd.
