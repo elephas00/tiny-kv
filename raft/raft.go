@@ -397,6 +397,7 @@ func (r *Raft) becomeLeader() {
 		return
 	}
 	r.State = StateLeader
+	log.Infof("%s become leader", r.nodeIdentifier())
 	// propose noop entry.
 	r.proposeNoopEntry()
 	// initialize leader data structure.
@@ -615,6 +616,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 				r.RaftLog.committed = address.Index
 			}
 		}
+		log.Infof("%s propose at %d", r.nodeIdentifier(), m.Entries[0].Index)
 		r.sendAppendEntriesToPeers()
 
 	case pb.MessageType_MsgAppendResponse:

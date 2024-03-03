@@ -161,11 +161,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 				})
 			} else {
 				prop, notFound := d.findProposal(entry)
-				if notFound {
-					if d.IsLeader() {
-						log.Errorf("%d failed to find proposal: %+v", d.PeerId(), entry)
-					}
-				} else {
+				if !notFound {
 					prop.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 				}
 
@@ -197,18 +193,19 @@ func (d *peerMsgHandler) proposalStr() string {
 func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
 
 	for _, entry := range committedEnts {
-		if d.IsLeader() {
-			prop, notFound := d.findProposal(entry)
-			if notFound {
-				log.Errorf("failed to find proposal according to entry: %+v", entry)
-			} else {
-				resp := d.applyRaftCommand(entry)
-				prop.cb.Done(resp)
-			}
-		} else {
-			d.applyRaftCommand(entry)
+		resp := d.applyRaftCommand(entry)
+		prop, notFound := d.findProposal(entry)
+		if !notFound {
+			prop.cb.Done(resp)
 		}
-
+		//if d.IsLeader() {
+		//
+		//	if notFound {
+		//		log.Errorf("failed to find proposal according to entry: %+v", entry)
+		//	} else {
+		//
+		//	}
+		//}
 	}
 	return nil
 }
@@ -230,10 +227,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 3. send message to peers.
 	for _, msg := range rd.Messages {
-		err := d.sendRaftMessage(msg)
-		if err != nil {
-			log.Errorf("failed to send raft message: %+v", err)
-		}
+		d.sendRaftMessage(msg)
+		//if err != nil {
+		//	//log.Errorf("failed to send raft message: %+v", err)
+		//}
 	}
 
 	// 4. apply committed entries exec write cmd and get cmd.
@@ -354,10 +351,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		term:  term,
 		cb:    cb,
 	})
-
-	if d.IsLeader() {
-		log.Infof("%d append proposal at %+v", d.PeerId(), lastIndex)
-	}
 
 }
 
