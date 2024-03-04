@@ -309,11 +309,14 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
 	for _, entry := range entries {
-		entryBytes, err := proto.Marshal(&entry)
+		//entryBytes, err := proto.Marshal(&entry)
+		//if err != nil {
+		//	return err
+		//}
+		err := raftWB.SetMeta(meta.RaftLogKey(ps.Region().Id, entry.Index), &eraftpb.Entry{Index: entry.Index, Term: entry.Term, EntryType: entry.EntryType, Data: entry.Data})
 		if err != nil {
 			return err
 		}
-		raftWB.SetCF("", meta.RaftLogKey(ps.Region().Id, entry.Index), entryBytes)
 	}
 	err := ps.Engines.WriteRaft(raftWB)
 
@@ -336,6 +339,13 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 	return nil, nil
+}
+
+func max(num1 uint64, num2 uint64) uint64 {
+	if num1 > num2 {
+		return num1
+	}
+	return num2
 }
 
 // Save memory states to disk.
@@ -361,19 +371,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	raftState := new(rspb.RaftLocalState)
 	raftState.HardState = new(eraftpb.HardState)
+
+	raftState.LastIndex = ps.raftState.LastIndex
+	raftState.LastTerm = ps.raftState.LastTerm
 	if len(ready.Entries) > 0 {
 		lastLogIndex := len(ready.Entries) - 1
 		raftState.LastIndex = ready.Entries[lastLogIndex].Index
 		raftState.LastTerm = ready.Entries[lastLogIndex].Term
-	} else {
-		raftState.LastIndex = ps.raftState.LastIndex
-		raftState.LastTerm = ps.raftState.LastTerm
 	}
-	//log.Infof("hard state: %+v", ready.HardState)
+
 	raftState.HardState.Commit = ready.HardState.Commit
 	raftState.HardState.Term = ready.HardState.Term
 	raftState.HardState.Vote = ready.HardState.Vote
-
+	//log.Infof("persist raft local state: %+v", raftState)
 	err := engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), raftState)
 	if err != nil {
 		return nil, err

@@ -182,7 +182,11 @@ func newRaft(c *Config) *Raft {
 	raft.initPeers(c)
 	raft.initHardSate(c)
 	raft.initVotes()
-	// log.Infof("new raft: %+v", raft)
+	log.Infof("new raft node %s", raft.nodeIdentifier())
+	log.Infof("peers:")
+	for id, progress := range raft.Prs {
+		log.Infof("node %d match index: %d, next index: %d", id, progress.Match, progress.Next)
+	}
 	return raft
 
 }
@@ -218,6 +222,27 @@ func (r *Raft) initVotes() {
 
 func (r *Raft) initRaftLog(config *Config) {
 	raftLog := newLog(config.Storage)
+
+	//first, err := config.Storage.FirstIndex()
+	//if err != nil {
+	//	log.Errorf("failed to get first index, %+v", err)
+	//}
+	//last, err := config.Storage.LastIndex()
+	//if err != nil {
+	//	log.Errorf("failed to get last index, %+v", err)
+	//}
+	//if first < last {
+	//	persistLogs, err := config.Storage.Entries(first, last+1)
+	//	if err != nil {
+	//		log.Errorf("failed to get persist logs: %+v", err)
+	//	} else {
+	//		log.Errorf("get log entries, first: %d, last: %d, len:%d", first, last, len(persistLogs))
+	//		raftLog.entries = append(raftLog.entries, persistLogs...)
+	//	}
+	//	raftLog.stabled = last
+	//}
+	//log.Errorf("init raft log, first: %d, last:%d, last log term: %d", raftLog.entries[0].Index, raftLog.LastIndex(), raftLog.entries[raftLog.LastIndex()].Term)
+
 	raftLog.applied = config.Applied
 	r.RaftLog = raftLog
 }
@@ -232,10 +257,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	if err != nil {
 		message := "%s failed to access log index %d when send append entries, error %+v"
-		panic(fmt.Sprintf(message, r.nodeIdentifier(), prevLogIndex, err))
+		log.Error(fmt.Sprintf(message, r.nodeIdentifier(), prevLogIndex, err))
+		return false
 	}
 	entries := r.RaftLog.entries[progress.Next:]
-
+	if progress.Match+1 != progress.Next {
+		log.Errorf("%d progress not match: %+v", to, *progress)
+	}
 	// log.Infof("%s send append to %d, previous log index %d, previous log term %d.", r.nodeIdentifier(), to, prevLogIndex, prevLogTerm)
 
 	ents := make([]*pb.Entry, len(entries))
@@ -398,6 +426,9 @@ func (r *Raft) becomeLeader() {
 	}
 	r.State = StateLeader
 	log.Infof("%s become leader", r.nodeIdentifier())
+	//for id := range r.Prs {
+	//	r.updatePrs(id, r.RaftLog.LastIndex())
+	//}
 	// propose noop entry.
 	r.proposeNoopEntry()
 	// initialize leader data structure.
@@ -590,6 +621,7 @@ func (r *Raft) updateCommit() {
 }
 
 func (r *Raft) updatePrs(id, match uint64) {
+	//log.Infof("node %d, match: %d, next: %d", id, match, match+1)
 	r.Prs[id].Match = match
 	r.Prs[id].Next = match + 1
 }
@@ -664,12 +696,14 @@ func (r *Raft) sendAppendResponse(to, index uint64, reject bool) {
 		Index:   index,
 		Reject:  reject,
 	}
+	//log.Infof("%s send resposne: %+v", r.nodeIdentifier(), appendResponse)
 	r.msgs = append(r.msgs, appendResponse)
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// TODO: Your Code Here (2A).
+	//log.Infof("%s receive append entries message, from: %d, to %d, prev log index: %d, prev log term: %d, size: %d", r.nodeIdentifier(), m.From, m.To, m.Index, m.LogTerm, len(m.Entries))
 	if r.Term > m.Term {
 		// reject.
 		r.sendAppendResponse(m.From, None, true)

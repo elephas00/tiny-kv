@@ -3,6 +3,7 @@ package raftstore
 import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"strconv"
@@ -193,19 +194,19 @@ func (d *peerMsgHandler) proposalStr() string {
 func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
 
 	for _, entry := range committedEnts {
-		resp := d.applyRaftCommand(entry)
-		prop, notFound := d.findProposal(entry)
-		if !notFound {
-			prop.cb.Done(resp)
+		if entry.Index == d.peerStorage.applyState.AppliedIndex+1 {
+			resp := d.applyRaftCommand(entry)
+			prop, notFound := d.findProposal(entry)
+			if !notFound {
+				prop.cb.Done(resp)
+			}
+			d.peerStorage.applyState.AppliedIndex = entry.Index
+			err := engine_util.PutMeta(d.peerStorage.Engines.Kv, meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			if err != nil {
+				return err
+			}
 		}
-		//if d.IsLeader() {
-		//
-		//	if notFound {
-		//		log.Errorf("failed to find proposal according to entry: %+v", entry)
-		//	} else {
-		//
-		//	}
-		//}
+
 	}
 	return nil
 }
@@ -235,15 +236,19 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if err != nil {
 		log.Errorf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
 	}
+	if len(rd.Entries) > 0 {
+		lastLogIndex := len(rd.Entries) - 1
+		d.peerStorage.raftState.LastIndex = rd.Entries[lastLogIndex].Index
+		d.peerStorage.raftState.LastTerm = rd.Entries[lastLogIndex].Term
+	}
 
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
-	if size := len(rd.Entries); size > 0 {
-		d.peerStorage.raftState.LastIndex = rd.Entries[size-1].Index
-		d.peerStorage.raftState.LastTerm = rd.Entries[size-1].Term
-	}
-	if size := len(rd.CommittedEntries); size > 0 {
-		d.peerStorage.raftState.HardState.Commit = rd.CommittedEntries[size-1].Index
+
+	if d.peerStorage.raftState.HardState.Commit <= rd.Commit {
+		d.peerStorage.raftState.HardState.Commit = rd.Commit
+	} else {
+		//log.Errorf(" commit rollback, hard state: %+v", d.peerStorage.raftState.HardState)
 	}
 
 }

@@ -60,23 +60,38 @@ type RaftLog struct {
 func (l *RaftLog) initEntries(storage Storage) {
 
 	// empty entry with a dummy entry
-	l.entries = []pb.Entry{{
-		EntryType: pb.EntryType_EntryNormal,
-		Term:      0,
-		Index:     0,
-		Data:      nil,
-	}}
+	l.entries = []pb.Entry{}
 
-	low, err := storage.FirstIndex()
-	if err == nil {
-		high, err := storage.LastIndex()
-		if err == nil && low <= high {
-			ents, err := storage.Entries(low, high+1)
-			if err == nil {
-				l.entries = append(l.entries, ents...)
-			}
+	firstLogIndex, err := storage.FirstIndex()
+	if err != nil {
+		log.Errorf("failed to get firstLogIndex, err: %+v", err)
+	}
+	lastLogIndex, err := storage.LastIndex()
+	if err != nil {
+		log.Errorf("failed to get lastLogIndex, err: %+v", err)
+	}
+	for i := uint64(0); i < firstLogIndex; i++ {
+		l.entries = append(l.entries, pb.Entry{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      0,
+			Index:     i,
+			Data:      nil,
+		})
+	}
+
+	if firstLogIndex <= lastLogIndex {
+		ents, err := storage.Entries(firstLogIndex, lastLogIndex+1)
+		if err != nil {
+			log.Errorf("failed to get stabled logs, err: %+v", err)
+		} else {
+			l.entries = append(l.entries, ents...)
+
 		}
 	}
+
+	log.Infof("first %d, last %d", firstLogIndex, lastLogIndex)
+	log.Errorf("init raft log, last %d, len: %d", l.LastIndex(), len(l.entries))
+
 	l.stabled = l.LastIndex()
 }
 
@@ -85,14 +100,18 @@ func (l *RaftLog) initEntries(storage Storage) {
 func newLog(storage Storage) *RaftLog {
 	// TODO: Your Code Here (2A).
 
+	state, _, err := storage.InitialState()
+	if err != nil {
+		log.Errorf("failed to init log: %+v", err)
+	}
+
 	raftLog := &RaftLog{
 		storage:   storage,
-		committed: 0,
-		applied:   0,
+		committed: state.Commit,
 	}
 	raftLog.initEntries(storage)
 
-	log.Infof("new raft log: %+v", raftLog)
+	//log.Infof("new raft log: %+v", raftLog)
 
 	return raftLog
 }
