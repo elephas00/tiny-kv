@@ -56,6 +56,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 }
 
 func (d *peerMsgHandler) findProposal(entry pb.Entry) (*proposal, bool) {
+	// TODO: this find function could with time complexity o(1)
 	for _, prop := range d.proposals {
 		if prop.term == entry.Term && prop.index == entry.Index {
 			return prop, false
