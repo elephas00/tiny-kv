@@ -338,14 +338,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
-}
 
-func max(num1 uint64, num2 uint64) uint64 {
-	if num1 > num2 {
-		return num1
-	}
-	return num2
+	return nil, nil
 }
 
 // Save memory states to disk.

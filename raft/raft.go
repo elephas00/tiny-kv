@@ -179,7 +179,7 @@ func newRaft(c *Config) *Raft {
 
 	// Initialize other fields...
 	raft.initRaftLog(c)
-	raft.initPeers(c)
+	raft.initPeersByConfig(c)
 	raft.initHardSate(c)
 	raft.initVotes()
 	log.Infof("new raft node %s", raft.nodeIdentifier())
@@ -198,7 +198,7 @@ func (r *Raft) initHardSate(c *Config) {
 	r.RaftLog.committed = hardState.Commit
 }
 
-func (r *Raft) initPeers(c *Config) {
+func (r *Raft) initPeersByConfig(c *Config) {
 	var peers []uint64
 	if len(c.peers) > 0 {
 		peers = c.peers
@@ -206,11 +206,7 @@ func (r *Raft) initPeers(c *Config) {
 		peers = confState.Nodes
 	}
 
-	r.Prs = make(map[uint64]*Progress, len(peers))
-	r.Prs[r.id] = &Progress{Match: 0, Next: 1}
-	for _, peer := range peers {
-		r.Prs[peer] = &Progress{Match: 0, Next: 1}
-	}
+	r.initPeers(peers)
 }
 
 func (r *Raft) initVotes() {
@@ -222,29 +218,23 @@ func (r *Raft) initVotes() {
 
 func (r *Raft) initRaftLog(config *Config) {
 	raftLog := newLog(config.Storage)
+	if snapshot, err := config.Storage.Snapshot(); err != nil {
+		raftLog.applied = config.Applied
+	} else {
+		raftLog.applied = snapshot.Metadata.Index
+	}
 
-	//first, err := config.Storage.FirstIndex()
-	//if err != nil {
-	//	log.Errorf("failed to get first index, %+v", err)
-	//}
-	//last, err := config.Storage.LastIndex()
-	//if err != nil {
-	//	log.Errorf("failed to get last index, %+v", err)
-	//}
-	//if first < last {
-	//	persistLogs, err := config.Storage.Entries(first, last+1)
-	//	if err != nil {
-	//		log.Errorf("failed to get persist logs: %+v", err)
-	//	} else {
-	//		log.Errorf("get log entries, first: %d, last: %d, len:%d", first, last, len(persistLogs))
-	//		raftLog.entries = append(raftLog.entries, persistLogs...)
-	//	}
-	//	raftLog.stabled = last
-	//}
-	//log.Errorf("init raft log, first: %d, last:%d, last log term: %d", raftLog.entries[0].Index, raftLog.LastIndex(), raftLog.entries[raftLog.LastIndex()].Term)
-
-	raftLog.applied = config.Applied
 	r.RaftLog = raftLog
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	snapshotMsg := pb.Message{
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		MsgType: pb.MessageType_MsgSnapshot,
+	}
+	r.msgs = append(r.msgs, snapshotMsg)
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -253,6 +243,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// TODO: Your Code Here (2A).
 
 	progress := r.Prs[to]
+	if progress.Next <= r.RaftLog.getOffset() {
+		r.sendSnapshot(to)
+		return false
+	}
+
 	prevLogIndex := progress.Match
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	if err != nil {
@@ -260,7 +255,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 		log.Error(fmt.Sprintf(message, r.nodeIdentifier(), prevLogIndex, err))
 		return false
 	}
-	entries := r.RaftLog.entries[progress.Next:]
+
+	entries := r.RaftLog.getEntries(progress.Next, r.RaftLog.LastIndex()+1)
 	if progress.Match+1 != progress.Next {
 		log.Errorf("%d progress not match: %+v", to, *progress)
 	}
@@ -510,6 +506,9 @@ func (r *Raft) handleFollowerStep(m pb.Message) error {
 		r.resetElectionElapsed()
 		r.handleHeartbeat(m)
 
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+
 	}
 	return nil
 }
@@ -678,10 +677,7 @@ func (r *Raft) truncateRaftLog(end uint64) {
 	}
 	offset := r.RaftLog.entries[0].Index
 	endIndex := end - offset
-	// log.Infof("before truncate last index is:%d", r.RaftLog.LastIndex())
 	r.RaftLog.entries = r.RaftLog.entries[:endIndex]
-	// log.Infof("after truncate last index is:%d", r.RaftLog.LastIndex())
-	// roll back stabled entries.
 	if r.RaftLog.stabled > endIndex-1 {
 		r.RaftLog.stabled = endIndex - 1
 	}
@@ -759,7 +755,6 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		return
 	}
 	if term, err := r.RaftLog.Term(m.Index); !(err == nil && term == m.LogTerm) {
-
 		r.sendHeartbeatResponse(m.From, true)
 		return
 	}
@@ -772,9 +767,44 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 }
 
+func (r *Raft) initPeers(peers []uint64) {
+	r.Prs = make(map[uint64]*Progress, len(peers))
+	r.Prs[r.id] = &Progress{Match: 0, Next: 1}
+	for _, peer := range peers {
+		r.Prs[peer] = &Progress{Match: 0, Next: 1}
+	}
+}
+
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if r.Term > m.Term {
+		// reject.
+		r.sendSnapshotResponse(m.From, true)
+		return
+	}
+	r.becomeFollower(r.Term, m.From)
+
+	if m.Index < r.RaftLog.entries[0].Index || m.Index > r.RaftLog.LastIndex() {
+		message := "warning: %s, trying to access index: %d, lastIncludedIndex: %d, commit: %d"
+		log.Error(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
+		return
+	}
+
+	r.compressRaftLog(m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term)
+
+	r.initPeers(m.Snapshot.Metadata.ConfState.Nodes)
+
+}
+
+func (r *Raft) compressRaftLog(index, term uint64) {
+	r.RaftLog.entries = []pb.Entry{
+		{
+			EntryType: pb.EntryType_EntryNormal,
+			Index:     index,
+			Term:      term,
+		},
+	}
 }
 
 // addNode add a new node to raft group
@@ -785,4 +815,15 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
+	responseMsg := pb.Message{
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		MsgType: pb.MessageType_MsgSnapshot,
+		Reject:  reject,
+	}
+	r.msgs = append(r.msgs, responseMsg)
 }

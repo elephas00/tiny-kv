@@ -90,7 +90,7 @@ func (l *RaftLog) initEntries(storage Storage) {
 	}
 
 	log.Infof("first %d, last %d", firstLogIndex, lastLogIndex)
-	log.Errorf("init raft log, last %d, len: %d", l.LastIndex(), len(l.entries))
+	log.Infof("init raft log, last %d, len: %d", l.LastIndex(), len(l.entries))
 
 	l.stabled = l.LastIndex()
 }
@@ -98,7 +98,7 @@ func (l *RaftLog) initEntries(storage Storage) {
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
-	// TODO: Your Code Here (2A).
+	// Your Code Here (2A).
 
 	state, _, err := storage.InitialState()
 	if err != nil {
@@ -110,8 +110,6 @@ func newLog(storage Storage) *RaftLog {
 		committed: state.Commit,
 	}
 	raftLog.initEntries(storage)
-
-	//log.Infof("new raft log: %+v", raftLog)
 
 	return raftLog
 }
@@ -131,10 +129,29 @@ func (l *RaftLog) allEntries() []pb.Entry {
 	return l.entries[1:]
 }
 
+// getEntries return all entries in [low, high)
+func (l *RaftLog) getEntries(low, high uint64) []pb.Entry {
+	if low == high {
+		return []pb.Entry{}
+	}
+	if low > high {
+		log.Panicf("failed to get entries with args low: %d, high: %d", low, high)
+	}
+
+	if low < l.getOffset() {
+		log.Panicf("failed to get entries with args low: %d, offset is: %d", low, l.getOffset())
+	}
+	return l.entries[low-l.getOffset() : high-l.getOffset()]
+}
+
+func (l *RaftLog) getOffset() uint64 {
+	return l.entries[0].Index
+}
+
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	// TODO: Your Code Here (2A).
-	return l.entries[l.stabled+1:]
+	// Your Code Here (2A).
+	return l.getEntries(l.stabled+1, l.LastIndex()+1)
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -142,26 +159,23 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	start := l.applied + 1
 	end := l.committed + 1
-	if start < end {
-		return l.entries[start:end]
-	} else {
-		return []pb.Entry{}
-	}
+	return l.getEntries(start, end)
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	// TODO: Your Code Here (2A).
+	// Your Code Here (2A).
 	entriesLen := len(l.entries)
 	return l.entries[entriesLen-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// TODO: Your Code Here (2A).
+	// Your Code Here (2A).
 	if lastIndex := l.LastIndex(); lastIndex < i {
 		message := "entry with index %d not exist and last index is %d"
 		return 0, errors.New(fmt.Sprintf(message, i, lastIndex))
 	}
-	return l.entries[i].Term, nil
+	entries := l.getEntries(i, i+1)
+	return entries[0].Term, nil
 }
