@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -163,19 +164,20 @@ func (rn *RawNode) Ready() Ready {
 		peers = append(peers, id)
 	}
 
-	//snapshot := pb.Snapshot{
-	//	Metadata: &pb.SnapshotMetadata{
-	//		Index:     rn.Raft.RaftLog.committed,
-	//		Term:      rn.Raft.Term,
-	//		ConfState: &pb.ConfState{Nodes: peers},
-	//	},
-	//}
+	truncatedIndex := rn.Raft.RaftLog.getOffset()
+	term, err := rn.Raft.RaftLog.Term(truncatedIndex)
+	if err != nil {
+		log.Errorf("%s failed to get term of index %d", rn.Raft.nodeIdentifier(), term)
+	}
+
 	ready := Ready{
 		HardState:        hardState,
 		Entries:          entries,
 		CommittedEntries: commitedEntries,
-		//Snapshot:         snapshot,
-		Messages: msgs,
+		Messages:         msgs,
+	}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 	return ready
 }

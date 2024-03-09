@@ -339,6 +339,28 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 
+	// disk state update
+	kvWB.MustWriteToDB(ps.Engines.Kv)
+	raftWB.MustWriteToDB(ps.Engines.Raft)
+
+	ps.regionSched <- runner.RegionTaskApply{
+		RegionId: ps.region.Id,
+		SnapMeta: snapshot.Metadata,
+	}
+
+	// in-memory state update
+	// RaftLocalState
+	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.HardState.Term = snapshot.Metadata.Term
+	ps.raftState.HardState.Commit = snapshot.Metadata.Index
+	// RaftApplyState
+	ps.applyState.AppliedIndex = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
+	ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
+	// TODO: RegionLocalState
+
+	ps.snapState.StateType = snap.SnapState_Applying
+
 	return nil, nil
 }
 
@@ -347,6 +369,34 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
+	// process snapshot.
+	if ready.Snapshot.Metadata != nil {
+		raftWB := new(engine_util.WriteBatch)
+		if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), &rspb.RaftLocalState{
+			HardState: &eraftpb.HardState{
+				Term:   ready.Snapshot.Metadata.Term,
+				Commit: ready.Snapshot.Metadata.Index,
+			},
+			LastIndex: ready.Snapshot.Metadata.Index,
+		}); err != nil {
+			return nil, err
+		}
+
+		kvWB := new(engine_util.WriteBatch)
+		if err := kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), &rspb.RaftApplyState{
+			AppliedIndex: ready.Snapshot.Metadata.Index,
+			TruncatedState: &rspb.RaftTruncatedState{
+				Index: ready.Snapshot.Metadata.Index,
+				Term:  ready.Snapshot.Metadata.Term,
+			},
+		}); err != nil {
+			return nil, err
+		}
+
+		snapshot, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		return snapshot, err
+	}
 
 	// Append entries and save raft hard state.
 	if len(ready.Entries) > 0 {
@@ -366,22 +416,23 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftState := new(rspb.RaftLocalState)
 	raftState.HardState = new(eraftpb.HardState)
 
-	raftState.LastIndex = ps.raftState.LastIndex
-	raftState.LastTerm = ps.raftState.LastTerm
 	if len(ready.Entries) > 0 {
 		lastLogIndex := len(ready.Entries) - 1
 		raftState.LastIndex = ready.Entries[lastLogIndex].Index
 		raftState.LastTerm = ready.Entries[lastLogIndex].Term
+	} else {
+		raftState.LastIndex = ps.raftState.LastIndex
+		raftState.LastTerm = ps.raftState.LastTerm
 	}
 
 	raftState.HardState.Commit = ready.HardState.Commit
 	raftState.HardState.Term = ready.HardState.Term
 	raftState.HardState.Vote = ready.HardState.Vote
-	//log.Infof("persist raft local state: %+v", raftState)
 	err := engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), raftState)
 	if err != nil {
 		return nil, err
 	}
+
 	return nil, nil
 }
 

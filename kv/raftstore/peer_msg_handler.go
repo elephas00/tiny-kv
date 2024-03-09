@@ -100,13 +100,7 @@ func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*r
 	return &raft_cmdpb.SnapResponse{Region: d.Region()}, nil
 }
 
-func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdResponse {
-	var raftCmd raft_cmdpb.RaftCmdRequest
-	err := proto.Unmarshal(entry.Data, &raftCmd)
-	if err != nil {
-		return ErrResp(err)
-	}
-
+func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
 	var responses []*raft_cmdpb.Response
 	for _, req := range raftCmd.Requests {
 		switch req.CmdType {
@@ -124,7 +118,6 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 					Get:     resp,
 				})
 			}
-
 		case raft_cmdpb.CmdType_Put:
 			resp, err := d.executePutRequest(req.GetPut())
 			if err != nil {
@@ -175,13 +168,49 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdRes
 
 		}
 	}
-	if len(responses) == 0 {
-		return &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-	}
 	return &raft_cmdpb.RaftCmdResponse{
 		Header:    &raft_cmdpb.RaftResponseHeader{Error: nil},
 		Responses: responses,
 	}
+}
+
+func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
+
+	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
+		// modify RaftTruncatedState in RaftApplyState.
+		// schedule a task to raftlog-gc work by ScheduleCompactLog.
+
+		gcTask := runner.RaftLogGCTask{
+			RaftEngine: d.peerStorage.Engines.Raft,
+			RegionID:   d.regionId,
+			StartIdx:   d.peerStorage.applyState.TruncatedState.Index,
+			EndIdx:     adminRequest.AdminRequest.CompactLog.CompactIndex,
+		}
+
+		d.peerStorage.applyState.TruncatedState.Index = adminRequest.AdminRequest.CompactLog.CompactIndex
+		d.peerStorage.applyState.TruncatedState.Term = adminRequest.AdminRequest.CompactLog.CompactTerm
+		d.peerStorage.regionSched <- gcTask
+
+		return nil
+
+	}
+	log.Panicf("unimplemented admin command %+v", adminRequest.AdminRequest.CmdType)
+	return nil
+}
+
+func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdResponse {
+	var raftCmd raft_cmdpb.RaftCmdRequest
+	err := proto.Unmarshal(entry.Data, &raftCmd)
+	if err != nil {
+		return ErrResp(err)
+	}
+
+	// apply admin request.
+	if raftCmd.AdminRequest != nil {
+		return d.applyAdminRaftCommand(entry, &raftCmd)
+	}
+	// apply normal requests
+	return d.applyNormalRaftCommand(entry, &raftCmd)
 }
 
 func (d *peerMsgHandler) proposalStr() string {

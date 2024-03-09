@@ -218,7 +218,9 @@ func (r *Raft) initVotes() {
 
 func (r *Raft) initRaftLog(config *Config) {
 	raftLog := newLog(config.Storage)
+
 	if snapshot, err := config.Storage.Snapshot(); err != nil {
+		log.Errorf("%d snapshot: %+v", r.id, snapshot)
 		raftLog.applied = config.Applied
 	} else {
 		raftLog.applied = snapshot.Metadata.Index
@@ -464,8 +466,6 @@ func (r *Raft) updateTermFromMessage(m pb.Message) error {
 }
 
 func (r *Raft) candidateIsMoreUpToDate(m pb.Message) bool {
-	// rf.getLog(rf.getLastLogIndex()).Term > args.LastLogTerm || (rf.getLog(rf.getLastLogIndex()).Term == args.LastLogTerm && rf.getLastLogIndex() > args.LastLogIndex
-	//return r.Term == m.Term && r.RaftLog.LastIndex() <= m.Index
 	if r.Term > m.Term {
 		return false
 	}
@@ -666,6 +666,10 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		if m.Term == r.Term && m.Index != r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
+
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+
 	}
 
 	return nil
@@ -778,6 +782,7 @@ func (r *Raft) initPeers(peers []uint64) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	log.Infof("%s triggered handle snapshot: %+v", r.nodeIdentifier(), m)
 	if r.Term > m.Term {
 		// reject.
 		r.sendSnapshotResponse(m.From, true)
@@ -794,6 +799,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.compressRaftLog(m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term)
 
 	r.initPeers(m.Snapshot.Metadata.ConfState.Nodes)
+	r.RaftLog.pendingSnapshot = m.Snapshot
 
 }
 
