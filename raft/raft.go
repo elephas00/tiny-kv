@@ -423,6 +423,7 @@ func (r *Raft) becomeLeader() {
 		return
 	}
 	r.State = StateLeader
+	r.Lead = r.id
 	log.Infof("%s become leader", r.nodeIdentifier())
 	//for id := range r.Prs {
 	//	r.updatePrs(id, r.RaftLog.LastIndex())
@@ -486,7 +487,7 @@ func (r *Raft) resetElectionElapsed() {
 
 func (r *Raft) handleFollowerStep(m pb.Message) error {
 	switch m.MsgType {
-	case pb.MessageType_MsgHup:
+	case pb.MessageType_MsgHup, pb.MessageType_MsgTimeoutNow:
 		r.becomeCandidate()
 		r.resetElectionElapsed()
 		r.sendRequestVoteToPeers()
@@ -609,7 +610,7 @@ func (r *Raft) updateCommit() {
 		// a leader could commit log in its term.
 		if cnt >= r.minimumQuorum() && term == r.Term {
 			r.RaftLog.committed = commit
-			log.Infof("%s commit %d, %d reach consensus", r.nodeIdentifier(), commit, cnt)
+			//log.Infof("%s commit %d, %d reach consensus", r.nodeIdentifier(), commit, cnt)
 			break
 		}
 	}
@@ -640,14 +641,13 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		for _, address := range m.Entries {
 			address.Index = r.RaftLog.LastIndex() + 1
 			address.Term = r.Term
-			address.EntryType = pb.EntryType_EntryNormal
 			r.RaftLog.entries = append(r.RaftLog.entries, *address)
 			r.updatePrs(r.id, address.Index)
 			if r.minimumQuorum() == 1 {
 				r.RaftLog.committed = address.Index
 			}
 		}
-		log.Infof("%s propose at %d", r.nodeIdentifier(), m.Entries[0].Index)
+		//log.Infof("%s propose at %d", r.nodeIdentifier(), m.Entries[0].Index)
 		r.sendAppendEntriesToPeers()
 
 	case pb.MessageType_MsgAppendResponse:
@@ -669,6 +669,9 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 
 	}
 
@@ -816,11 +819,16 @@ func (r *Raft) compressRaftLog(index, term uint64) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.Prs[id] = &Progress{Match: r.RaftLog.getOffset(), Next: r.RaftLog.getOffset() + 1}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	delete(r.Prs, id)
+	if r.State == StateLeader {
+		r.updateCommit()
+	}
 }
 
 func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
@@ -832,4 +840,29 @@ func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
 		Reject:  reject,
 	}
 	r.msgs = append(r.msgs, responseMsg)
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	if r.validTransferee(m.From) {
+		r.sendMsgTimeoutNow(m.From)
+		r.leadTransferee = m.From
+		r.becomeFollower(r.Term, m.From)
+	} else {
+		r.sendAppend(m.From)
+		// TODO: r.PendingConfIndex =
+	}
+}
+
+func (r *Raft) sendMsgTimeoutNow(to uint64) {
+	timeoutMessage := pb.Message{
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		MsgType: pb.MessageType_MsgTimeoutNow,
+	}
+	r.msgs = append(r.msgs, timeoutMessage)
+}
+
+func (r *Raft) validTransferee(transferee uint64) bool {
+	return r.RaftLog.LastIndex() == r.Prs[transferee].Match
 }
