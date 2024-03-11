@@ -487,10 +487,15 @@ func (r *Raft) resetElectionElapsed() {
 
 func (r *Raft) handleFollowerStep(m pb.Message) error {
 	switch m.MsgType {
-	case pb.MessageType_MsgHup, pb.MessageType_MsgTimeoutNow:
-		r.becomeCandidate()
-		r.resetElectionElapsed()
-		r.sendRequestVoteToPeers()
+	case pb.MessageType_MsgHup:
+		if r.Prs[r.id] == nil {
+			// do nothing
+			log.Infof("node %d was removed from peers, just do nothing when timeout or msgHup", r.id)
+		} else {
+			r.becomeCandidate()
+			r.resetElectionElapsed()
+			r.sendRequestVoteToPeers()
+		}
 
 	case pb.MessageType_MsgRequestVote:
 		if r.Term == m.Term && r.Lead == None && r.Vote == None && r.candidateIsMoreUpToDate(m) {
@@ -510,6 +515,11 @@ func (r *Raft) handleFollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 
+	case pb.MessageType_MsgTransferLeader:
+		r.handleFollowerTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
+
+		r.Step(pb.Message{From: r.id, To: r.id, Term: r.Term, MsgType: pb.MessageType_MsgHup})
 	}
 	return nil
 }
@@ -671,7 +681,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		r.handleSnapshot(m)
 
 	case pb.MessageType_MsgTransferLeader:
-		r.handleTransferLeader(m)
+		r.handleLeaderTransferLeader(m)
 
 	}
 
@@ -776,7 +786,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 func (r *Raft) initPeers(peers []uint64) {
 	r.Prs = make(map[uint64]*Progress, len(peers))
-	r.Prs[r.id] = &Progress{Match: 0, Next: 1}
+	//r.Prs[r.id] = &Progress{Match: 0, Next: 1}
 	for _, peer := range peers {
 		r.Prs[peer] = &Progress{Match: 0, Next: 1}
 	}
@@ -842,14 +852,20 @@ func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
 	r.msgs = append(r.msgs, responseMsg)
 }
 
-func (r *Raft) handleTransferLeader(m pb.Message) {
-	if r.validTransferee(m.From) {
-		r.sendMsgTimeoutNow(m.From)
-		r.leadTransferee = m.From
-		r.becomeFollower(r.Term, m.From)
+func (r *Raft) handleLeaderTransferLeader(m pb.Message) {
+	if r.transfereeIsExist(m.From) {
+		if r.transfereeIsMostUpdate(m.From) {
+			r.sendMsgTimeoutNow(m.From)
+			r.leadTransferee = m.From
+		} else {
+			r.sendAppend(m.From)
+			r.sendMsgTimeoutNow(m.From)
+			r.leadTransferee = m.From
+		}
 	} else {
-		r.sendAppend(m.From)
-		// TODO: r.PendingConfIndex =
+		// do nothing.
+		log.Infof("failed to transfer leadership to %d, node not exists", m.From)
+
 	}
 }
 
@@ -863,6 +879,29 @@ func (r *Raft) sendMsgTimeoutNow(to uint64) {
 	r.msgs = append(r.msgs, timeoutMessage)
 }
 
-func (r *Raft) validTransferee(transferee uint64) bool {
+func (r *Raft) transfereeIsExist(transferee uint64) bool {
+	return r.Prs[transferee] != nil
+}
+
+func (r *Raft) transfereeIsMostUpdate(transferee uint64) bool {
 	return r.RaftLog.LastIndex() == r.Prs[transferee].Match
+}
+
+func (r *Raft) handleFollowerTransferLeader(m pb.Message) {
+	if r.leadTransferee != r.Lead {
+		r.sendTransferLeaderMessage(r.id)
+	} else {
+		r.sendTransferLeaderMessage(r.Lead)
+	}
+
+}
+
+func (r *Raft) sendTransferLeaderMessage(to uint64) {
+	transferLeaderMessage := pb.Message{
+		From:    r.id,
+		To:      r.Lead,
+		Term:    r.Term,
+		MsgType: pb.MessageType_MsgTransferLeader,
+	}
+	r.msgs = append(r.msgs, transferLeaderMessage)
 }

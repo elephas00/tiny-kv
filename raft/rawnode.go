@@ -70,13 +70,14 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	prevSoftState *SoftState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// TODO: Your Code Here (2A).
 	raft := newRaft(config)
-	return &RawNode{Raft: raft}, nil
+	return &RawNode{Raft: raft, prevSoftState: &SoftState{}}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -179,7 +180,16 @@ func (rn *RawNode) Ready() Ready {
 	if rn.Raft.RaftLog.pendingSnapshot != nil {
 		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
+	softState := &SoftState{RaftState: rn.Raft.State, Lead: rn.Raft.Lead}
+	if rn.softStateChanged(softState) {
+		ready.SoftState = softState
+		rn.prevSoftState = softState
+	}
 	return ready
+}
+
+func (rn *RawNode) softStateChanged(state *SoftState) bool {
+	return !(rn.prevSoftState.RaftState == state.RaftState && rn.prevSoftState.Lead == state.Lead)
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
