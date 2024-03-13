@@ -194,6 +194,19 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		return nil
 
 	}
+	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
+		// TODO: update RegionLocalState
+
+		if d.IsLeader() {
+			log.Errorf("transfer leader called by node %d", d.PeerId())
+			d.RaftGroup.TransferLeader(adminRequest.AdminRequest.TransferLeader.Peer.Id)
+		}
+
+		return &raft_cmdpb.RaftCmdResponse{
+			Header:        &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader},
+		}
+	}
 	log.Panicf("unimplemented admin command %+v", adminRequest.AdminRequest.CmdType)
 	return nil
 }
@@ -345,6 +358,14 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
+func msgIsAdminRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
+	return msg.AdminRequest != nil
+}
+
+func msgIsChangePeerRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
+	return msg.AdminRequest.ChangePeer != nil
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -362,9 +383,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 
 	// propose command.
-	err = d.RaftGroup.Propose(data)
-	if err != nil {
-		log.Errorf("failed to propose raft command: %+v", err)
+	if msgIsAdminRequest(msg) && msgIsChangePeerRequest(msg) {
+		if err = d.RaftGroup.ProposeConfChange(pb.ConfChange{
+			ChangeType: msg.AdminRequest.ChangePeer.ChangeType,
+			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
+		}); err != nil {
+			log.Errorf("failed to propose conf change raft cammand: %+v", err)
+			return
+		}
+		log.Errorf("config chang called")
+	} else {
+		if err = d.RaftGroup.Propose(data); err != nil {
+			log.Errorf("%d failed to propose raft command: %+v", d.PeerId(), err)
+			return
+		}
+
 	}
 
 	// 1.storage callback to pendingCmd(proposals).
@@ -374,6 +407,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	if size := len(rd.Entries); size > 0 {
 		lastIndex = rd.Entries[size-1].Index
 		term = rd.Entries[size-1].Term
+		log.Infof("%d propose a command at %d, term %d", d.PeerId(), lastIndex, term)
 	} else {
 		log.Panic("failed to propose, there are no log in raft module.")
 	}

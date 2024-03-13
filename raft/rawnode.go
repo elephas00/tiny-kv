@@ -230,5 +230,12 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
+
+	peers := []uint64{}
+	for id := range rn.Raft.Prs {
+		peers = append(peers, id)
+	}
+
+	log.Infof("%s receive transfer leader ship to: %d, peers %+v", rn.Raft.nodeIdentifier(), transferee, peers)
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }

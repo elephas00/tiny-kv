@@ -428,11 +428,15 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftState.HardState.Commit = ready.HardState.Commit
 	raftState.HardState.Term = ready.HardState.Term
 	raftState.HardState.Vote = ready.HardState.Vote
-	err := engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), raftState)
-	if err != nil {
+
+	if err := engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), raftState); err != nil {
 		return nil, err
 	}
 
+	regionLocalState := &rspb.RegionLocalState{}
+	if err := engine_util.PutMeta(ps.Engines.Raft, meta.RegionStateKey(ps.region.Id), regionLocalState); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 

@@ -374,6 +374,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.Vote = None
+	r.leadTransferee = None
 }
 
 // sendVoteToCandidateItself makes the current candidate vote for itself.
@@ -395,6 +396,7 @@ func (r *Raft) becomeCandidate() {
 	r.Term++
 	r.Lead = None
 	r.State = StateCandidate
+	r.leadTransferee = None
 	r.votes = make(map[uint64]bool, len(r.Prs))
 	r.sendVoteToCandidateItself()
 }
@@ -423,6 +425,7 @@ func (r *Raft) becomeLeader() {
 		return
 	}
 	r.State = StateLeader
+	r.leadTransferee = None
 	r.Lead = r.id
 	log.Infof("%s become leader", r.nodeIdentifier())
 	//for id := range r.Prs {
@@ -647,7 +650,10 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		//r.sendAppend(m.From)
 
 	case pb.MessageType_MsgPropose:
-
+		//  leadership transferring, return proposal dropped
+		if r.leadTransferee != None {
+			return ErrProposalDropped
+		}
 		for _, address := range m.Entries {
 			address.Index = r.RaftLog.LastIndex() + 1
 			address.Term = r.Term
@@ -669,6 +675,10 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			r.updatePrs(m.From, match)
 			// log.Infof("%s receive append response from %d, match index:%d", r.nodeIdentifier(), m.From, match)
 			r.updateCommit()
+			if r.transfereeIsExist(m.From) && r.leadTransferee == m.From && r.transfereeIsMostUpdate(m.From) {
+				log.Infof("%s send timeoutnow to %d", r.nodeIdentifier(), m.From)
+				r.sendMsgTimeoutNow(m.From)
+			}
 		}
 
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -853,14 +863,19 @@ func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
 }
 
 func (r *Raft) handleLeaderTransferLeader(m pb.Message) {
+	if m.From == r.id {
+		r.leadTransferee = None
+		return
+	}
+
 	if r.transfereeIsExist(m.From) {
+		r.leadTransferee = m.From
 		if r.transfereeIsMostUpdate(m.From) {
 			r.sendMsgTimeoutNow(m.From)
-			r.leadTransferee = m.From
+			log.Infof("%s send timeoutnow request to %d", r.nodeIdentifier(), m.From)
 		} else {
 			r.sendAppend(m.From)
-			r.sendMsgTimeoutNow(m.From)
-			r.leadTransferee = m.From
+			log.Infof("%s send append request to %d", r.nodeIdentifier(), m.From)
 		}
 	} else {
 		// do nothing.
