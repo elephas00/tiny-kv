@@ -669,7 +669,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			return ErrProposalDropped
 		}
 		// TODO: when config is changing, could the leader propose normal command?
-		if r.RaftLog.applied < r.PendingConfIndex {
+		if r.RaftLog.applied < r.PendingConfIndex && m.Entries[0].EntryType == pb.EntryType_EntryConfChange {
 			return ErrProposalDropped
 		}
 		//if m.Entries[0].EntryType == pb.EntryType_EntryConfChange {

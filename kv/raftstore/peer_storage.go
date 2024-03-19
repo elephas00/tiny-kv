@@ -385,16 +385,16 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.regionSched <- applyTask
 
 	// TODO: clear stale data
-	//ps.clearExtraData(snapData.Region)
-	//err := ps.clearMeta(kvWB, raftWB)
-	//if err != nil {
-	//	return nil, err
-	//}
+	ps.clearExtraData(ps.Region())
+	err := ps.clearMeta(kvWB, raftWB)
+	if err != nil {
+		return nil, err
+	}
 
 	kvWB.MustWriteToDB(ps.Engines.Kv)
 	raftWB.MustWriteToDB(ps.Engines.Raft)
-	// wait apply finish.
 
+	// wait apply finish.
 	success := <-ch
 	if success {
 		ps.snapState.StateType = snap.SnapState_Relax
@@ -402,21 +402,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	} else {
 		return nil, errors.New("failed to apply snapshot")
 	}
-	//if ps.snapState.StateType != snap.SnapState_Applying {
-	//
-	//	select {
-	//	case success := <-ch:
-	//		if success {
-	//			ps.snapState.StateType = snap.SnapState_Relax
-	//			return result, nil
-	//		} else {
-	//			return nil, errors.New("failed to apply snapshot")
-	//		}
-	//	default:
-	//		return nil, errors.New("no response from snapshot application")
-	//	}
-	//}
-	//return nil, errors.New("no response from snapshot application")
 }
 
 // Save memory states to disk.
