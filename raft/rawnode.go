@@ -103,6 +103,7 @@ func (rn *RawNode) Propose(data []byte) error {
 
 // ProposeConfChange proposes a config change.
 func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
+	log.Infof("%s receive propose conf change: %+v", rn.Raft.nodeIdentifier(), cc)
 	data, err := cc.Marshal()
 	if err != nil {
 		return err
@@ -236,6 +237,6 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 		peers = append(peers, id)
 	}
 
-	log.Infof("%s receive transfer leader ship to: %d, peers %+v", rn.Raft.nodeIdentifier(), transferee, peers)
+	log.Infof("%s receive transfer leadership to: %d, peers %+v", rn.Raft.nodeIdentifier(), transferee, peers)
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }

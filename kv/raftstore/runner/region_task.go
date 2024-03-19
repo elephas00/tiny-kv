@@ -63,6 +63,7 @@ func (r *regionTaskHandler) Handle(t worker.Task) {
 		// but it may not when merge is implemented.
 		r.ctx.handleGen(task.RegionId, task.Notifier)
 	case *RegionTaskApply:
+		log.Infof("handle apply called")
 		task := t.(*RegionTaskApply)
 		r.ctx.handleApply(task.RegionId, task.Notifier, task.StartKey, task.EndKey, task.SnapMeta)
 	case *RegionTaskDestroy:

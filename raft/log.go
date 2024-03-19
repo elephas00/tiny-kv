@@ -17,6 +17,7 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -57,6 +58,38 @@ type RaftLog struct {
 	// Your Data Here (2A).
 }
 
+func (l *RaftLog) initCompactedLog(firstLogIndex uint64, lastLogIndex uint64, storage Storage) {
+	if snapshot, err := storage.Snapshot(); err == nil {
+		l.entries = append(l.entries, pb.Entry{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      snapshot.Metadata.Term,
+			Index:     snapshot.Metadata.Index,
+		})
+		return
+	}
+
+	if firstLogIndex < meta.RaftInitLogIndex {
+		l.entries = append(l.entries, pb.Entry{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      0,
+			Index:     0,
+		})
+		return
+	}
+
+	term, err := storage.Term(firstLogIndex - 1)
+	if err != nil {
+		log.Errorf("failed to get log %d", firstLogIndex)
+	}
+
+	l.entries = append(l.entries, pb.Entry{
+		EntryType: pb.EntryType_EntryNormal,
+		Term:      term,
+		Index:     firstLogIndex - 1,
+	})
+
+}
+
 func (l *RaftLog) initEntries(storage Storage) {
 
 	// empty entry with a dummy entry
@@ -70,14 +103,7 @@ func (l *RaftLog) initEntries(storage Storage) {
 	if err != nil {
 		log.Errorf("failed to get lastLogIndex, err: %+v", err)
 	}
-	for i := uint64(0); i < firstLogIndex; i++ {
-		l.entries = append(l.entries, pb.Entry{
-			EntryType: pb.EntryType_EntryNormal,
-			Term:      0,
-			Index:     i,
-			Data:      nil,
-		})
-	}
+	l.initCompactedLog(firstLogIndex, lastLogIndex, storage)
 
 	if firstLogIndex <= lastLogIndex {
 		ents, err := storage.Entries(firstLogIndex, lastLogIndex+1)
@@ -92,7 +118,8 @@ func (l *RaftLog) initEntries(storage Storage) {
 	log.Infof("first %d, last %d", firstLogIndex, lastLogIndex)
 	log.Infof("init raft log, last %d, len: %d", l.LastIndex(), len(l.entries))
 
-	l.stabled = l.LastIndex()
+	l.stableTo(l.LastIndex())
+
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -178,4 +205,16 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 	entries := l.getEntries(i, i+1)
 	return entries[0].Term, nil
+}
+
+func (l *RaftLog) stableTo(index uint64) {
+	l.stabled = index
+}
+
+func (l *RaftLog) applyTo(index uint64) {
+	l.applied = index
+}
+
+func (l *RaftLog) commitTo(index uint64) {
+	l.committed = index
 }

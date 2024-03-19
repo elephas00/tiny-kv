@@ -90,6 +90,7 @@ func InitApplyState(kvEngine *badger.DB, region *metapb.Region) (*rspb.RaftApply
 			return applyState, err
 		}
 	}
+	log.Infof("apply state: %+v", applyState)
 	return applyState, nil
 }
 

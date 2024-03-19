@@ -74,25 +74,14 @@ func (d *peerMsgHandler) executeGetRequest(get *raft_cmdpb.GetRequest) (*raft_cm
 	return &raft_cmdpb.GetResponse{Value: value}, nil
 }
 
-func (d *peerMsgHandler) executePutRequest(put *raft_cmdpb.PutRequest) (*raft_cmdpb.PutResponse, error) {
-	kvStore := d.peerStorage.Engines.Kv
-	err := engine_util.PutCF(kvStore, put.GetCf(), put.GetKey(), put.GetValue())
-
-	if err != nil {
-		return nil, err
-	} else {
-		return &raft_cmdpb.PutResponse{}, nil
-	}
+func (d *peerMsgHandler) executePutRequest(put *raft_cmdpb.PutRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.PutResponse, error) {
+	kvWB.SetCF(put.GetCf(), put.GetKey(), put.GetValue())
+	return &raft_cmdpb.PutResponse{}, nil
 }
 
-func (d *peerMsgHandler) executeDeleteRequest(delete *raft_cmdpb.DeleteRequest) (*raft_cmdpb.DeleteResponse, error) {
-	kvStore := d.peerStorage.Engines.Kv
-	err := engine_util.DeleteCF(kvStore, delete.GetCf(), delete.GetKey())
-	if err != nil {
-		return nil, err
-	} else {
-		return &raft_cmdpb.DeleteResponse{}, nil
-	}
+func (d *peerMsgHandler) executeDeleteRequest(delete *raft_cmdpb.DeleteRequest, kvWB *engine_util.WriteBatch) (*raft_cmdpb.DeleteResponse, error) {
+	kvWB.DeleteCF(delete.GetCf(), delete.GetKey())
+	return &raft_cmdpb.DeleteResponse{}, nil
 }
 
 func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*raft_cmdpb.SnapResponse, error) {
@@ -100,7 +89,7 @@ func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*r
 	return &raft_cmdpb.SnapResponse{Region: d.Region()}, nil
 }
 
-func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	var responses []*raft_cmdpb.Response
 	for _, req := range raftCmd.Requests {
 		switch req.CmdType {
@@ -119,7 +108,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 				})
 			}
 		case raft_cmdpb.CmdType_Put:
-			resp, err := d.executePutRequest(req.GetPut())
+			resp, err := d.executePutRequest(req.GetPut(), kvWB)
 			if err != nil {
 				// TODO: handle this error.
 				responses = append(responses, &raft_cmdpb.Response{
@@ -133,7 +122,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 				})
 			}
 		case raft_cmdpb.CmdType_Delete:
-			resp, err := d.executeDeleteRequest(req.GetDelete())
+			resp, err := d.executeDeleteRequest(req.GetDelete(), kvWB)
 			if err != nil {
 				// TODO: handle this error.
 				responses = append(responses, &raft_cmdpb.Response{
@@ -175,7 +164,6 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 }
 
 func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
-
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
 		// modify RaftTruncatedState in RaftApplyState.
 		// schedule a task to raftlog-gc work by ScheduleCompactLog.
@@ -195,7 +183,6 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 	}
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
-		// TODO: update RegionLocalState
 
 		if d.IsLeader() {
 			log.Errorf("transfer leader called by node %d", d.PeerId())
@@ -207,23 +194,134 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 			AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader},
 		}
 	}
-	log.Panicf("unimplemented admin command %+v", adminRequest.AdminRequest.CmdType)
+	log.Panicf("unimplemented raft admin command")
 	return nil
 }
 
-func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry) *raft_cmdpb.RaftCmdResponse {
-	var raftCmd raft_cmdpb.RaftCmdRequest
-	err := proto.Unmarshal(entry.Data, &raftCmd)
+func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+
+	newPeer := new(metapb.Peer)
+	newPeer.Id = change.NodeId
+	newPeer.StoreId = change.NodeId
+	newPeers := d.peerStorage.region.Peers
+	newPeers = append(newPeers, newPeer)
+	d.peerStorage.region.Peers = newPeers
+
+	regionLocalState := new(rspb.RegionLocalState)
+	regionLocalState.State = rspb.PeerState_Normal
+	regionLocalState.Region = d.Region()
+
+	d.ctx.storeMeta.RWMutex.Lock()
+	d.ctx.storeMeta.regions[d.regionId].Peers = newPeers
+	d.ctx.storeMeta.RWMutex.Unlock()
+
+	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
 	if err != nil {
-		return ErrResp(err)
+		log.Errorf("failed to set region local state, err: %+v", err)
 	}
 
-	// apply admin request.
-	if raftCmd.AdminRequest != nil {
-		return d.applyAdminRaftCommand(entry, &raftCmd)
+	return &raft_cmdpb.RaftCmdResponse{
+		Header:        &raft_cmdpb.RaftResponseHeader{},
+		AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer},
 	}
-	// apply normal requests
-	return d.applyNormalRaftCommand(entry, &raftCmd)
+}
+
+func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+	var newPeers []*metapb.Peer
+	for _, peerNode := range d.peerStorage.region.Peers {
+		if peerNode.Id != change.NodeId {
+			newPeers = append(newPeers, peerNode)
+		}
+	}
+	d.peerStorage.region.Peers = newPeers
+
+	d.ctx.storeMeta.RWMutex.Lock()
+	d.ctx.storeMeta.regions[d.regionId].Peers = newPeers
+	d.ctx.storeMeta.RWMutex.Unlock()
+
+	regionLocalState := new(rspb.RegionLocalState)
+	regionLocalState.State = rspb.PeerState_Tombstone
+	regionLocalState.Region = d.Region()
+	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
+	if err != nil {
+		log.Errorf("failed to set region local state, err: %+v", err)
+	}
+
+	// destroy current node if it was removed.
+	if d.mayExecuteDestroyPeer(entry, change) {
+		d.peer.stopped = true
+		d.destroyPeer()
+	}
+
+	d.peer.removePeerCache(change.NodeId)
+
+	return &raft_cmdpb.RaftCmdResponse{
+		Header:        &raft_cmdpb.RaftResponseHeader{},
+		AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer},
+	}
+}
+
+func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+	log.Infof("%d is applying admin raft command index: %d, term %d, command type: %+v", d.PeerId(), entry.Index, entry.Term, change.ChangeType)
+	d.RaftGroup.ApplyConfChange(
+		pb.ConfChange{
+			ChangeType: change.ChangeType,
+			NodeId:     change.NodeId,
+		})
+
+	d.peerStorage.region.RegionEpoch.ConfVer++
+	if change.ChangeType == pb.ConfChangeType_AddNode {
+		return d.applyAddNodeConfChangeRaftCommand(&entry, &change, kvWB)
+	}
+	if change.ChangeType == pb.ConfChangeType_RemoveNode {
+		return d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
+	}
+
+	panic("not supported change type.")
+
+}
+
+func (d *peerMsgHandler) mayExecuteDestroyPeer(entry *pb.Entry, change *pb.ConfChange) bool {
+	if d.PeerId() != change.NodeId {
+		return false
+	}
+	if d.RaftGroup.Raft.RaftLog.LastIndex() != entry.Index {
+		log.Errorf("%d reject to destroy, because it was restarted node.", d.PeerId())
+		return false
+	}
+	return true
+}
+
+func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+	//log.Infof("%d is applying command index: %d, term: %d", d.PeerId(), entry.Index, entry.Term)
+
+	if entry.EntryType == pb.EntryType_EntryNormal {
+		// apply normal requests
+		var raftCmd raft_cmdpb.RaftCmdRequest
+		err := proto.Unmarshal(entry.Data, &raftCmd)
+		if err != nil {
+			log.Errorf("%d failed to apply raft command index: %d, term: %d, err:%+v", d.PeerId(), entry.Index, entry.Term, err)
+			return ErrResp(err)
+		}
+		if raftCmd.AdminRequest != nil {
+			return d.applyAdminRaftCommand(entry, &raftCmd)
+		}
+		return d.applyNormalRaftCommand(entry, &raftCmd, kvWB)
+	}
+
+	if entry.EntryType == pb.EntryType_EntryConfChange {
+		var confChange pb.ConfChange
+		err := proto.Unmarshal(entry.Data, &confChange)
+		if err != nil {
+			log.Errorf("%d failed to apply raft config change command, index: %d, term: %d, err:%+v", d.PeerId(), entry.Index, entry.Term, err)
+			return ErrResp(err)
+		}
+		// apply admin request.
+		return d.applyConfChangeRaftCommand(entry, confChange, kvWB)
+	}
+
+	log.Panic("unknown entry type: %+v", entry.EntryType)
+	return nil
 }
 
 func (d *peerMsgHandler) proposalStr() string {
@@ -237,21 +335,57 @@ func (d *peerMsgHandler) proposalStr() string {
 func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
 
 	for _, entry := range committedEnts {
+		//log.Infof("%d, apply index:%d, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		if entry.Index == d.peerStorage.applyState.AppliedIndex+1 {
-			resp := d.applyRaftCommand(entry)
+			kvWB := new(engine_util.WriteBatch)
+			d.peerStorage.applyState.AppliedIndex = entry.Index
+			err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			if err != nil {
+				log.Errorf("set meta failed: %+v", err)
+			}
+
+			resp := d.applyRaftCommand(entry, kvWB)
 			prop, notFound := d.findProposal(entry)
-			if !notFound {
+			if notFound {
+				if d.IsLeader() {
+					log.Errorf("%d failed to find call back for entry %d, term: %d", d.PeerId(), entry.Index, entry.Term)
+					d.printProposals()
+				}
+			} else {
+				//log.Infof("%s send callback %s", d.Tag, describeProposal(prop))
 				prop.cb.Done(resp)
 			}
-			d.peerStorage.applyState.AppliedIndex = entry.Index
-			err := engine_util.PutMeta(d.peerStorage.Engines.Kv, meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-			if err != nil {
-				return err
+
+			if d.stopped {
+				// just do nothing and return.
+				return nil
+			} else {
+				err = kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+				if err != nil {
+					log.Errorf("failed to write kv, err: %+v", err)
+				}
 			}
+
+			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
+		} else {
+			log.Panicf("%d, apply index:%d failed, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		}
 
 	}
 	return nil
+}
+
+func (d *peerMsgHandler) printProposals() {
+
+	message := ""
+	for _, p := range d.peer.proposals {
+		message += describeProposal(p)
+	}
+	log.Errorf("proposals: %s", message)
+}
+
+func describeProposal(p *proposal) string {
+	return "(" + strconv.Itoa(int(p.index)) + "," + strconv.Itoa(int(p.term)) + ")"
 }
 
 func (d *peerMsgHandler) HandleRaftReady() {
@@ -264,9 +398,15 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	rd := d.RaftGroup.Ready()
 
 	// 2. persist entries, call SaveReadyState
-	_, err := d.peerStorage.SaveReadyState(&rd)
+	state, err := d.peerStorage.SaveReadyState(&rd)
 	if err != nil {
 		log.Errorf("faild to save ready state %+v, err: %+v", rd, err)
+	} else {
+		if state != nil && state.PrevRegion != state.Region {
+			d.ctx.storeMeta.RWMutex.Lock()
+			d.ctx.storeMeta.regions[d.regionId].Peers = state.Region.Peers
+			d.ctx.storeMeta.RWMutex.Unlock()
+		}
 	}
 
 	// 3. send message to peers.
@@ -391,7 +531,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
 		}
-		log.Errorf("config chang called")
+
 	} else {
 		if err = d.RaftGroup.Propose(data); err != nil {
 			log.Errorf("%d failed to propose raft command: %+v", d.PeerId(), err)
@@ -407,7 +547,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	if size := len(rd.Entries); size > 0 {
 		lastIndex = rd.Entries[size-1].Index
 		term = rd.Entries[size-1].Term
-		log.Infof("%d propose a command at %d, term %d", d.PeerId(), lastIndex, term)
+		//log.Infof("%d propose a command at %d, term %d", d.PeerId(), lastIndex, term)
 	} else {
 		log.Panic("failed to propose, there are no log in raft module.")
 	}

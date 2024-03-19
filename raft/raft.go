@@ -182,6 +182,7 @@ func newRaft(c *Config) *Raft {
 	raft.initPeersByConfig(c)
 	raft.initHardSate(c)
 	raft.initVotes()
+
 	log.Infof("new raft node %s", raft.nodeIdentifier())
 	log.Infof("peers:")
 	for id, progress := range raft.Prs {
@@ -224,17 +225,30 @@ func (r *Raft) initRaftLog(config *Config) {
 		raftLog.applied = config.Applied
 	} else {
 		raftLog.applied = snapshot.Metadata.Index
+
 	}
 
 	r.RaftLog = raftLog
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
+	//if r.RaftLog.applied < r.PendingConfIndex {
+	//	log.Errorf("%s failed to send snapshot to %d, becuase config change %d not finish yet, applied: %d", r.nodeIdentifier(), to, r.PendingConfIndex, r.RaftLog.applied)
+	//	return
+	//}
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
+		return
+	} else {
+		log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
+	}
 	snapshotMsg := pb.Message{
-		From:    r.id,
-		To:      to,
-		Term:    r.Term,
-		MsgType: pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		MsgType:  pb.MessageType_MsgSnapshot,
+		Snapshot: &snapshot,
 	}
 	r.msgs = append(r.msgs, snapshotMsg)
 }
@@ -654,6 +668,14 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		if r.leadTransferee != None {
 			return ErrProposalDropped
 		}
+		// TODO: when config is changing, could the leader propose normal command?
+		if r.RaftLog.applied < r.PendingConfIndex {
+			return ErrProposalDropped
+		}
+		//if m.Entries[0].EntryType == pb.EntryType_EntryConfChange {
+		//
+		//}
+
 		for _, address := range m.Entries {
 			address.Index = r.RaftLog.LastIndex() + 1
 			address.Term = r.Term
@@ -663,7 +685,11 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 				r.RaftLog.committed = address.Index
 			}
 		}
-		//log.Infof("%s propose at %d", r.nodeIdentifier(), m.Entries[0].Index)
+
+		if m.Entries[0].EntryType == pb.EntryType_EntryConfChange {
+			r.PendingConfIndex = m.Entries[0].Index
+		}
+		//log.Infof("%s propose at %d, entry type: %+v", r.nodeIdentifier(), m.Entries[0].Index, m.Entries[0].EntryType)
 		r.sendAppendEntriesToPeers()
 
 	case pb.MessageType_MsgAppendResponse:
@@ -702,12 +728,10 @@ func (r *Raft) truncateRaftLog(end uint64) {
 	if end == r.RaftLog.LastIndex()+1 {
 		return
 	}
-	offset := r.RaftLog.entries[0].Index
+	offset := r.RaftLog.getOffset()
 	endIndex := end - offset
 	r.RaftLog.entries = r.RaftLog.entries[:endIndex]
-	if r.RaftLog.stabled > endIndex-1 {
-		r.RaftLog.stabled = endIndex - 1
-	}
+	r.RaftLog.stableTo(end - 1)
 }
 
 func (r *Raft) sendAppendResponse(to, index uint64, reject bool) {
@@ -781,10 +805,10 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		r.sendHeartbeatResponse(m.From, true)
 		return
 	}
-	if term, err := r.RaftLog.Term(m.Index); !(err == nil && term == m.LogTerm) {
-		r.sendHeartbeatResponse(m.From, true)
-		return
-	}
+	//if term, err := r.RaftLog.Term(m.Index); !(err == nil && term == m.LogTerm) {
+	//	r.sendHeartbeatResponse(m.From, true)
+	//	return
+	//}
 	r.becomeFollower(m.GetTerm(), m.GetFrom())
 	// accept.
 	if m.Commit > r.RaftLog.committed {
@@ -798,24 +822,45 @@ func (r *Raft) initPeers(peers []uint64) {
 	r.Prs = make(map[uint64]*Progress, len(peers))
 	//r.Prs[r.id] = &Progress{Match: 0, Next: 1}
 	for _, peer := range peers {
-		r.Prs[peer] = &Progress{Match: 0, Next: 1}
+		r.Prs[peer] = &Progress{Match: r.RaftLog.getOffset(), Next: r.RaftLog.getOffset() + 1}
 	}
 }
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	if r.RaftLog.pendingSnapshot != nil {
+		log.Infof("%s reject to handle snapshot: %+v", r.nodeIdentifier(), m)
+		return
+	}
 	log.Infof("%s triggered handle snapshot: %+v", r.nodeIdentifier(), m)
 	if r.Term > m.Term {
 		// reject.
 		r.sendSnapshotResponse(m.From, true)
 		return
 	}
+	if m.Snapshot.Metadata == nil {
+		// reject.
+		r.sendSnapshotResponse(m.From, true)
+		return
+	}
+	if r.RaftLog.LastIndex() >= m.Snapshot.Metadata.Index {
+		term, err := r.RaftLog.Term(r.RaftLog.LastIndex())
+		if err != nil {
+			log.Errorf("failed to get last index")
+		} else {
+			if term >= m.Snapshot.Metadata.Term {
+				r.sendSnapshotResponse(m.From, true)
+				return
+			}
+		}
+
+	}
 	r.becomeFollower(r.Term, m.From)
 
 	if m.Index < r.RaftLog.entries[0].Index || m.Index > r.RaftLog.LastIndex() {
 		message := "warning: %s, trying to access index: %d, lastIncludedIndex: %d, commit: %d"
-		log.Error(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
+		log.Errorf(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
 		return
 	}
 
@@ -823,7 +868,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 
 	r.initPeers(m.Snapshot.Metadata.ConfState.Nodes)
 	r.RaftLog.pendingSnapshot = m.Snapshot
-
+	r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
 }
 
 func (r *Raft) compressRaftLog(index, term uint64) {
@@ -834,6 +879,9 @@ func (r *Raft) compressRaftLog(index, term uint64) {
 			Term:      term,
 		},
 	}
+	r.RaftLog.stableTo(index)
+	r.RaftLog.applyTo(index)
+	r.RaftLog.commitTo(index)
 }
 
 // addNode add a new node to raft group
