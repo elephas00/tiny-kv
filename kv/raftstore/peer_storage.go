@@ -330,9 +330,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 
-	for _, keyValuePair := range snapData.Data {
-		kvWB.SetCF("", keyValuePair.GetKey(), keyValuePair.GetValue())
-	}
+	//for _, keyValuePair := range snapData.Data {
+	//	kvWB.SetCF("", keyValuePair.GetKey(), keyValuePair.GetValue())
+	//}
 	// set RaftLocalState for raft.
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), &rspb.RaftLocalState{
 		HardState: &eraftpb.HardState{
@@ -396,8 +396,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	// wait apply finish.
 	success := <-ch
+	ps.snapState.StateType = snap.SnapState_Relax
 	if success {
-		ps.snapState.StateType = snap.SnapState_Relax
 		return result, nil
 	} else {
 		return nil, errors.New("failed to apply snapshot")

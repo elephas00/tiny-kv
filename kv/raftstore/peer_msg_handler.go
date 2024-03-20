@@ -202,27 +202,14 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 
 	newPeer := changePeer.Peer
 	d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
-
+	d.insertPeerCache(newPeer)
 	regionLocalState := new(rspb.RegionLocalState)
 	regionLocalState.State = rspb.PeerState_Normal
 	regionLocalState.Region = d.Region()
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	clone := new(metapb.Region)
-	clone.Id = d.regionId
-	clone.StartKey = d.Region().StartKey
-	clone.EndKey = d.Region().EndKey
-	clone.RegionEpoch = new(metapb.RegionEpoch)
-	clone.RegionEpoch.ConfVer = d.Region().RegionEpoch.ConfVer
-	clone.RegionEpoch.Version = d.Region().RegionEpoch.Version
-	clone.Peers = []*metapb.Peer{}
-	for _, p := range d.peerStorage.region.Peers {
-		if p != nil {
-			clone.Peers = append(clone.Peers, &metapb.Peer{Id: p.Id, StoreId: p.StoreId})
-		}
-	}
-	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-	d.ctx.storeMeta.regions[d.regionId] = clone
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
+	d.ctx.storeMeta.regions[d.regionId] = d.Region()
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
@@ -246,22 +233,8 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peerStorage.region.Peers = newPeers
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	clone := new(metapb.Region)
-	clone.Id = d.regionId
-	clone.StartKey = d.Region().StartKey
-	clone.EndKey = d.Region().EndKey
-	clone.RegionEpoch = new(metapb.RegionEpoch)
-	clone.RegionEpoch.ConfVer = d.Region().RegionEpoch.ConfVer
-	clone.RegionEpoch.Version = d.Region().RegionEpoch.Version
-	for _, p := range newPeers {
-		if p != nil {
-			clone.Peers = append(clone.Peers, &metapb.Peer{Id: p.Id, StoreId: p.StoreId})
-		}
-
-	}
-
-	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-	d.ctx.storeMeta.regions[d.regionId] = clone
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
+	d.ctx.storeMeta.regions[d.regionId] = d.Region()
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
@@ -280,7 +253,6 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	// destroy current node if it was removed.
 	if d.mayExecuteDestroyPeer(entry, change) {
 		d.peer.stopped = true
-
 		d.destroyPeer()
 	}
 
@@ -297,7 +269,7 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 	var resp *raft_cmdpb.RaftCmdResponse
 	d.peerStorage.region.RegionEpoch.ConfVer++
 	//log.Infof("conf change details: %+v", change)
-	log.Errorf("%s change region epoch confversion to %d, entry index: %d", d.Tag, d.peerStorage.region.RegionEpoch.ConfVer, entry.Index)
+	//log.Errorf("%s change region epoch confversion to %d, entry index: %d", d.Tag, d.peerStorage.region.RegionEpoch.ConfVer, entry.Index)
 
 	var confChangeRequest raft_cmdpb.RaftCmdRequest
 	err := proto.Unmarshal(change.Context, &confChangeRequest)
@@ -306,12 +278,11 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 	}
 	if change.ChangeType == pb.ConfChangeType_AddNode {
 		resp = d.applyAddNodeConfChangeRaftCommand(&entry, &change, confChangeRequest.AdminRequest.ChangePeer, kvWB)
-		log.Infof("%s apply conf change, region: %+v", d.Tag, d.Region())
 	}
 	if change.ChangeType == pb.ConfChangeType_RemoveNode {
 		resp = d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
 	}
-
+	log.Infof("%s apply conf change, region: %+v", d.Tag, d.Region())
 	d.RaftGroup.ApplyConfChange(
 		pb.ConfChange{
 			ChangeType: change.ChangeType,
@@ -441,9 +412,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if err != nil {
 		log.Errorf("faild to save ready state %+v, err: %+v", rd, err)
 	} else {
-		if state != nil && state.PrevRegion != state.Region {
+		if state != nil {
 			d.ctx.storeMeta.RWMutex.Lock()
-			d.ctx.storeMeta.regions[d.regionId].Peers = state.Region.Peers
+			d.ctx.storeMeta.regions[d.regionId] = state.Region
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: state.Region})
 			d.ctx.storeMeta.RWMutex.Unlock()
 		}
 	}
@@ -594,7 +566,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	// 1.storage callback to pendingCmd(proposals).
 	var lastIndex, term uint64
 	rd := d.RaftGroup.Ready()
-
 	if size := len(rd.Entries); size > 0 {
 		lastIndex = rd.Entries[size-1].Index
 		term = rd.Entries[size-1].Term
