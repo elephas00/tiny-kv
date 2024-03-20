@@ -179,7 +179,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		return snapshot, err
 	}
 
-	log.Infof("%s requesting snapshot", ps.Tag)
+	//log.Infof("%s requesting snapshot", ps.Tag)
 	ps.snapTriedCnt++
 	ch := make(chan *eraftpb.Snapshot, 1)
 	ps.snapState = snap.SnapState{
@@ -391,13 +391,12 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		return nil, err
 	}
 
-	kvWB.MustWriteToDB(ps.Engines.Kv)
-	raftWB.MustWriteToDB(ps.Engines.Raft)
-
 	// wait apply finish.
 	success := <-ch
 	ps.snapState.StateType = snap.SnapState_Relax
 	if success {
+		kvWB.MustWriteToDB(ps.Engines.Kv)
+		raftWB.MustWriteToDB(ps.Engines.Raft)
 		return result, nil
 	} else {
 		return nil, errors.New("failed to apply snapshot")

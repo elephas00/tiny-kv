@@ -241,7 +241,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		//log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
 		return
 	} else {
-		log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
+		//log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
 	}
 	snapshotMsg := pb.Message{
 		From:     r.id,

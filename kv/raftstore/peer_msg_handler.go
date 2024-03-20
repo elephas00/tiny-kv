@@ -44,6 +44,7 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 }
 
 func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
+
 	raftMsg := rspb.RaftMessage{
 		RegionId:    d.regionId,
 		FromPeer:    d.peer.Meta,
@@ -51,6 +52,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		Message:     &msg,
 		RegionEpoch: d.Region().RegionEpoch,
 	}
+	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
 	err := d.ctx.trans.Send(&raftMsg)
 	return err
 }
@@ -206,10 +208,11 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	regionLocalState := new(rspb.RegionLocalState)
 	regionLocalState.State = rspb.PeerState_Normal
 	regionLocalState.Region = d.Region()
+	clone := cloneRegion(d.Region())
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
-	d.ctx.storeMeta.regions[d.regionId] = d.Region()
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+	d.ctx.storeMeta.regions[d.regionId] = clone
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
@@ -218,9 +221,27 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	}
 
 	return &raft_cmdpb.RaftCmdResponse{
-		Header:        &raft_cmdpb.RaftResponseHeader{},
-		AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer},
+		Header: &raft_cmdpb.RaftResponseHeader{},
+		AdminResponse: &raft_cmdpb.AdminResponse{
+			CmdType:    raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: d.Region()},
+		},
 	}
+}
+
+func cloneRegion(region *metapb.Region) *metapb.Region {
+	clone := new(metapb.Region)
+	clone.RegionEpoch = new(metapb.RegionEpoch)
+	clone.RegionEpoch.ConfVer = region.RegionEpoch.ConfVer
+	clone.RegionEpoch.Version = region.RegionEpoch.Version
+
+	clone.Id = region.Id
+	clone.StartKey = region.StartKey
+	clone.EndKey = region.EndKey
+	for _, p := range region.Peers {
+		clone.Peers = append(clone.Peers, &metapb.Peer{Id: p.Id, StoreId: p.StoreId})
+	}
+	return clone
 }
 
 func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
@@ -231,10 +252,11 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 		}
 	}
 	d.peerStorage.region.Peers = newPeers
+	clone := cloneRegion(d.Region())
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
-	d.ctx.storeMeta.regions[d.regionId] = d.Region()
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+	d.ctx.storeMeta.regions[d.regionId] = clone
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
@@ -259,8 +281,11 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peer.removePeerCache(change.NodeId)
 
 	return &raft_cmdpb.RaftCmdResponse{
-		Header:        &raft_cmdpb.RaftResponseHeader{},
-		AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer},
+		Header: &raft_cmdpb.RaftResponseHeader{},
+		AdminResponse: &raft_cmdpb.AdminResponse{
+			CmdType:    raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: d.Region()},
+		},
 	}
 }
 
@@ -413,9 +438,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		log.Errorf("faild to save ready state %+v, err: %+v", rd, err)
 	} else {
 		if state != nil {
+			clone := cloneRegion(state.Region)
 			d.ctx.storeMeta.RWMutex.Lock()
-			d.ctx.storeMeta.regions[d.regionId] = state.Region
-			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: state.Region})
+			d.ctx.storeMeta.regions[d.regionId] = clone
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 			d.ctx.storeMeta.RWMutex.Unlock()
 		}
 	}
