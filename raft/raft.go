@@ -184,10 +184,10 @@ func newRaft(c *Config) *Raft {
 	raft.initVotes()
 
 	log.Infof("new raft node %s", raft.nodeIdentifier())
-	log.Infof("peers:")
-	for id, progress := range raft.Prs {
-		log.Infof("node %d match index: %d, next index: %d", id, progress.Match, progress.Next)
-	}
+	//log.Infof("peers:")
+	//for id, progress := range raft.Prs {
+	//	log.Infof("node %d match index: %d, next index: %d", id, progress.Match, progress.Next)
+	//}
 	return raft
 
 }
@@ -221,7 +221,7 @@ func (r *Raft) initRaftLog(config *Config) {
 	raftLog := newLog(config.Storage)
 
 	if snapshot, err := config.Storage.Snapshot(); err != nil {
-		log.Errorf("%d snapshot: %+v", r.id, snapshot)
+		//log.Errorf("%d snapshot: %+v", r.id, snapshot)
 		raftLog.applied = config.Applied
 	} else {
 		raftLog.applied = snapshot.Metadata.Index
@@ -238,7 +238,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 	//}
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
+		//log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
 		return
 	} else {
 		log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
@@ -887,7 +887,7 @@ func (r *Raft) compressRaftLog(index, term uint64) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	r.Prs[id] = &Progress{Match: r.RaftLog.getOffset(), Next: r.RaftLog.getOffset() + 1}
+	r.Prs[id] = &Progress{0, 1}
 }
 
 // removeNode remove a node from raft group

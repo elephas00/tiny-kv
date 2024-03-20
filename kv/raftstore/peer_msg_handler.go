@@ -47,7 +47,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 	raftMsg := rspb.RaftMessage{
 		RegionId:    d.regionId,
 		FromPeer:    d.peer.Meta,
-		ToPeer:      &metapb.Peer{Id: msg.To, StoreId: msg.To},
+		ToPeer:      d.getPeerFromCache(msg.To),
 		Message:     &msg,
 		RegionEpoch: d.Region().RegionEpoch,
 	}
@@ -198,21 +198,31 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 	return nil
 }
 
-func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, changePeer *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 
-	newPeer := new(metapb.Peer)
-	newPeer.Id = change.NodeId
-	newPeer.StoreId = change.NodeId
-	newPeers := d.peerStorage.region.Peers
-	newPeers = append(newPeers, newPeer)
-	d.peerStorage.region.Peers = newPeers
+	newPeer := changePeer.Peer
+	d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
 
 	regionLocalState := new(rspb.RegionLocalState)
 	regionLocalState.State = rspb.PeerState_Normal
 	regionLocalState.Region = d.Region()
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	d.ctx.storeMeta.regions[d.regionId].Peers = newPeers
+	clone := new(metapb.Region)
+	clone.Id = d.regionId
+	clone.StartKey = d.Region().StartKey
+	clone.EndKey = d.Region().EndKey
+	clone.RegionEpoch = new(metapb.RegionEpoch)
+	clone.RegionEpoch.ConfVer = d.Region().RegionEpoch.ConfVer
+	clone.RegionEpoch.Version = d.Region().RegionEpoch.Version
+	clone.Peers = []*metapb.Peer{}
+	for _, p := range d.peerStorage.region.Peers {
+		if p != nil {
+			clone.Peers = append(clone.Peers, &metapb.Peer{Id: p.Id, StoreId: p.StoreId})
+		}
+	}
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+	d.ctx.storeMeta.regions[d.regionId] = clone
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
@@ -236,7 +246,22 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peerStorage.region.Peers = newPeers
 
 	d.ctx.storeMeta.RWMutex.Lock()
-	d.ctx.storeMeta.regions[d.regionId].Peers = newPeers
+	clone := new(metapb.Region)
+	clone.Id = d.regionId
+	clone.StartKey = d.Region().StartKey
+	clone.EndKey = d.Region().EndKey
+	clone.RegionEpoch = new(metapb.RegionEpoch)
+	clone.RegionEpoch.ConfVer = d.Region().RegionEpoch.ConfVer
+	clone.RegionEpoch.Version = d.Region().RegionEpoch.Version
+	for _, p := range newPeers {
+		if p != nil {
+			clone.Peers = append(clone.Peers, &metapb.Peer{Id: p.Id, StoreId: p.StoreId})
+		}
+
+	}
+
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+	d.ctx.storeMeta.regions[d.regionId] = clone
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
@@ -250,6 +275,7 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	// destroy current node if it was removed.
 	if d.mayExecuteDestroyPeer(entry, change) {
 		d.peer.stopped = true
+
 		d.destroyPeer()
 	}
 
@@ -262,23 +288,31 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 }
 
 func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
-	log.Infof("%d is applying admin raft command index: %d, term %d, command type: %+v", d.PeerId(), entry.Index, entry.Term, change.ChangeType)
+	//log.Infof("%d is applying admin raft command index: %d, term %d, command type: %+v", d.PeerId(), entry.Index, entry.Term, change.ChangeType)
+	var resp *raft_cmdpb.RaftCmdResponse
+	d.peerStorage.region.RegionEpoch.ConfVer++
+	//log.Infof("conf change details: %+v", change)
+	log.Errorf("%s change region epoch confversion to %d, entry index: %d", d.Tag, d.peerStorage.region.RegionEpoch.ConfVer, entry.Index)
+
+	var confChangeRequest raft_cmdpb.RaftCmdRequest
+	err := proto.Unmarshal(change.Context, &confChangeRequest)
+	if err != nil {
+		log.Panicf("%s failed to apply conf change command, err: %+v", d.Tag, err)
+	}
+	if change.ChangeType == pb.ConfChangeType_AddNode {
+		resp = d.applyAddNodeConfChangeRaftCommand(&entry, &change, confChangeRequest.AdminRequest.ChangePeer, kvWB)
+		log.Infof("%s apply conf change, region: %+v", d.Tag, d.Region())
+	}
+	if change.ChangeType == pb.ConfChangeType_RemoveNode {
+		resp = d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
+	}
+
 	d.RaftGroup.ApplyConfChange(
 		pb.ConfChange{
 			ChangeType: change.ChangeType,
 			NodeId:     change.NodeId,
 		})
-
-	d.peerStorage.region.RegionEpoch.ConfVer++
-	if change.ChangeType == pb.ConfChangeType_AddNode {
-		return d.applyAddNodeConfChangeRaftCommand(&entry, &change, kvWB)
-	}
-	if change.ChangeType == pb.ConfChangeType_RemoveNode {
-		return d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
-	}
-
-	panic("not supported change type.")
-
+	return resp
 }
 
 func (d *peerMsgHandler) mayExecuteDestroyPeer(entry *pb.Entry, change *pb.ConfChange) bool {
@@ -524,9 +558,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 	// propose command.
 	if msgIsAdminRequest(msg) && msgIsChangePeerRequest(msg) {
+		if !d.msgHasSameRegion(msg) {
+			log.Errorf("%s failed to propose conf change raft command, region not same, cur region: %+v, msg region: %+v", d.Tag, d.Region(), msg.GetHeader())
+			return
+		}
+		//log.Errorf("confchange propose command detail: %+v", msg)
+		context, err := proto.Marshal(msg)
+		if err != nil {
+			log.Errorf("failed to propose conf change raft command: %+v,", err)
+			return
+		}
+
 		if err = d.RaftGroup.ProposeConfChange(pb.ConfChange{
 			ChangeType: msg.AdminRequest.ChangePeer.ChangeType,
 			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
+			Context:    context,
 		}); err != nil {
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
@@ -993,6 +1039,21 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
 		}
 	}
+}
+
+func (d *peerMsgHandler) msgHasSameRegion(msg *raft_cmdpb.RaftCmdRequest) bool {
+	left := d.Region()
+	right := msg.GetHeader()
+	if left.Id != right.RegionId {
+		return false
+	}
+	if left.RegionEpoch.ConfVer != right.RegionEpoch.ConfVer {
+		return false
+	}
+	if left.RegionEpoch.Version != right.RegionEpoch.Version {
+		return false
+	}
+	return true
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {

@@ -182,7 +182,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 		panic(err)
 	}
 	if regionState.GetState() != rspb.PeerState_Normal {
-		return nil, errors.Errorf("snap job %d seems stale, skip", regionId)
+		return nil, errors.Errorf("snap job %d seems stale, skip, region state: %+v", regionId, regionState.GetState())
 	}
 
 	region := regionState.GetRegion()
