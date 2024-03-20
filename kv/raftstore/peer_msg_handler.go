@@ -265,7 +265,12 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
-	regionLocalState.State = rspb.PeerState_Tombstone
+	if change.NodeId == d.PeerId() {
+		regionLocalState.State = rspb.PeerState_Tombstone
+	} else {
+		regionLocalState.State = rspb.PeerState_Normal
+	}
+
 	regionLocalState.Region = d.Region()
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
 	if err != nil {
