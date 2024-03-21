@@ -52,7 +52,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		Message:     &msg,
 		RegionEpoch: d.Region().RegionEpoch,
 	}
-	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
+	log.Infof("%s send raft message %+v", d.Tag, raftMsg)
 	err := d.ctx.trans.Send(&raftMsg)
 	return err
 }
@@ -245,6 +245,12 @@ func cloneRegion(region *metapb.Region) *metapb.Region {
 }
 
 func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+	if d.mayExecuteDestroyPeer(entry, change) {
+		d.peer.stopped = true
+		d.destroyPeer()
+		return nil
+	}
+
 	var newPeers []*metapb.Peer
 	for _, peerNode := range d.peerStorage.region.Peers {
 		if peerNode.Id != change.NodeId {
@@ -273,10 +279,6 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	}
 
 	// destroy current node if it was removed.
-	if d.mayExecuteDestroyPeer(entry, change) {
-		d.peer.stopped = true
-		d.destroyPeer()
-	}
 
 	d.peer.removePeerCache(change.NodeId)
 

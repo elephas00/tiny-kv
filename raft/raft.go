@@ -666,6 +666,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgPropose:
 		//  leadership transferring, return proposal dropped
 		if r.leadTransferee != None {
+			log.Errorf("%d reject to propose, leader transfering.", r.id)
 			return ErrProposalDropped
 		}
 		// TODO: when config is changing, could the leader propose normal command?
@@ -708,7 +709,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		}
 
 	case pb.MessageType_MsgHeartbeatResponse:
-		//// log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
+		log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
 		if m.Term == r.Term && m.Index != r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}
