@@ -748,6 +748,35 @@ func (r *Raft) sendAppendResponse(to, index uint64, reject bool) {
 	r.msgs = append(r.msgs, appendResponse)
 }
 
+func (r *Raft) checkMessageNotValid(m *pb.Message) bool {
+	lastLogIndex := r.RaftLog.LastIndex()
+	if lastLogIndex < m.Index {
+		return true
+	}
+	offset := r.RaftLog.getOffset()
+	if m.Index >= offset {
+		term, err := r.RaftLog.Term(m.Index)
+		if err != nil {
+			return false
+		}
+		return term != m.LogTerm
+	}
+	// this progress could with time complexity o(logn)
+	for len(m.Entries) > 0 {
+		firstEntry := m.Entries[0]
+		m.Entries = m.Entries[1:]
+		if firstEntry.Index < offset {
+			// do nothing
+		} else if firstEntry.Index == offset {
+			m.Index = firstEntry.Term
+			m.LogTerm = firstEntry.Term
+			return r.checkMessageNotValid(m)
+		}
+	}
+	return true
+
+}
+
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// TODO: Your Code Here (2A).
@@ -758,16 +787,11 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 	r.becomeFollower(r.Term, m.From)
-	if term, err := r.RaftLog.Term(m.Index); !(err == nil && term == m.LogTerm) {
-		// reject.
+	// check whether the current follower contains entry that match previous log and previous term in message.
+	if r.checkMessageNotValid(&m) {
 		r.sendAppendResponse(m.From, None, true)
 		return
 	}
-
-	//r.truncateRaftLog(m.Index + 1)
-	//for _, entry := range m.Entries {
-	//	r.RaftLog.entries = append(r.RaftLog.entries, *entry)
-	//}
 
 	for _, entry := range m.Entries {
 		if term, err := r.RaftLog.Term(entry.Index); err == nil && term == entry.Term {
