@@ -261,22 +261,28 @@ func (r *Raft) sendAppend(to uint64) bool {
 	progress := r.Prs[to]
 	if progress.Next <= r.RaftLog.getOffset() {
 		r.sendSnapshot(to)
-		return false
+
 	}
 
-	prevLogIndex := progress.Match
-	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
-	if err != nil {
-		message := "%s failed to access log index %d when send append entries, error %+v"
-		log.Error(fmt.Sprintf(message, r.nodeIdentifier(), prevLogIndex, err))
-		return false
+	var prevLogIndex, prevLogTerm uint64
+
+	if progress.Match <= r.RaftLog.getOffset() {
+		compactedLog := r.RaftLog.entries[0]
+		prevLogTerm = compactedLog.Term
+		prevLogIndex = compactedLog.Index
+	} else {
+		prevLogIndex = progress.Match
+		term, err := r.RaftLog.Term(prevLogIndex)
+		if err != nil {
+			message := "%s failed to access log index %d when send append entries, error %+v"
+			log.Error(fmt.Sprintf(message, r.nodeIdentifier(), prevLogIndex, err))
+			return false
+		} else {
+			prevLogTerm = term
+		}
 	}
 
-	entries := r.RaftLog.getEntries(progress.Next, r.RaftLog.LastIndex()+1)
-	if progress.Match+1 != progress.Next {
-		log.Errorf("%d progress not match: %+v", to, *progress)
-	}
-	// log.Infof("%s send append to %d, previous log index %d, previous log term %d.", r.nodeIdentifier(), to, prevLogIndex, prevLogTerm)
+	entries := r.RaftLog.getEntries(prevLogIndex+1, r.RaftLog.LastIndex()+1)
 
 	ents := make([]*pb.Entry, len(entries))
 
@@ -442,12 +448,13 @@ func (r *Raft) becomeLeader() {
 	r.leadTransferee = None
 	r.Lead = r.id
 	log.Infof("%s become leader", r.nodeIdentifier())
-	//for id := range r.Prs {
-	//	r.updatePrs(id, r.RaftLog.LastIndex())
-	//}
+	// initialize leader data structure.
+	for id := range r.Prs {
+		r.updatePrs(id, r.RaftLog.getOffset())
+	}
 	// propose noop entry.
 	r.proposeNoopEntry()
-	// initialize leader data structure.
+
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -671,11 +678,9 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		}
 		// TODO: when config is changing, could the leader propose normal command?
 		if r.RaftLog.applied < r.PendingConfIndex && m.Entries[0].EntryType == pb.EntryType_EntryConfChange {
+			log.Errorf("%d reject to propose, previous pending confchange %d not finish, now apply %d", r.id, r.PendingConfIndex, r.RaftLog.applied)
 			return ErrProposalDropped
 		}
-		//if m.Entries[0].EntryType == pb.EntryType_EntryConfChange {
-		//
-		//}
 
 		for _, address := range m.Entries {
 			address.Index = r.RaftLog.LastIndex() + 1
@@ -696,7 +701,9 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
 			match := r.Prs[m.From].Match
-			r.updatePrs(m.From, match-1)
+			if match > 0 {
+				r.updatePrs(m.From, match-1)
+			}
 		} else {
 			match := m.Index
 			r.updatePrs(m.From, match)
@@ -709,7 +716,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 		}
 
 	case pb.MessageType_MsgHeartbeatResponse:
-		log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
+		//log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
 		if m.Term == r.Term && m.Index != r.RaftLog.LastIndex() {
 			r.sendAppend(m.From)
 		}

@@ -330,9 +330,13 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
 
-	//for _, keyValuePair := range snapData.Data {
-	//	kvWB.SetCF("", keyValuePair.GetKey(), keyValuePair.GetValue())
-	//}
+	// TODO: clear stale data
+	ps.clearExtraData(ps.Region())
+	err := ps.clearMeta(kvWB, raftWB)
+	if err != nil {
+		return nil, err
+	}
+
 	// set RaftLocalState for raft.
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), &rspb.RaftLocalState{
 		HardState: &eraftpb.HardState{
@@ -340,6 +344,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 			Commit: snapshot.Metadata.Index,
 		},
 		LastIndex: snapshot.Metadata.Index,
+		LastTerm:  snapshot.Metadata.Term,
 	}); err != nil {
 		return nil, err
 	}
@@ -354,20 +359,24 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		return nil, err
 	}
 	// set RegionLocalState for kv.
-	if err := kvWB.SetMeta(meta.RegionStateKey(snapData.Region.GetId()), snapData.Region); err != nil {
+	if err := kvWB.SetMeta(meta.RegionStateKey(snapData.Region.GetId()), &rspb.RegionLocalState{
+		State:  rspb.PeerState_Normal,
+		Region: snapData.Region,
+	}); err != nil {
 		return nil, err
 	}
 
 	// in-memory state update
 	// RaftLocalState
 	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.LastTerm = snapshot.Metadata.Term
 	ps.raftState.HardState.Term = snapshot.Metadata.Term
 	ps.raftState.HardState.Commit = snapshot.Metadata.Index
 	// RaftApplyState
 	ps.applyState.AppliedIndex = snapshot.Metadata.Index
 	ps.applyState.TruncatedState.Index = snapshot.Metadata.Index
 	ps.applyState.TruncatedState.Term = snapshot.Metadata.Term
-
+	// RegionLocalState
 	result := new(ApplySnapResult)
 	result.Region = snapData.Region
 	result.PrevRegion = ps.region
@@ -383,13 +392,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		SnapMeta: snapshot.Metadata,
 	}
 	ps.regionSched <- applyTask
-
-	// TODO: clear stale data
-	ps.clearExtraData(ps.Region())
-	err := ps.clearMeta(kvWB, raftWB)
-	if err != nil {
-		return nil, err
-	}
 
 	// wait apply finish.
 	success := <-ch
@@ -416,7 +418,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		kvWB := new(engine_util.WriteBatch)
 		snapshot, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
-			log.Errorf("%s failed to apply %+v", ps.Tag, err)
+			log.Panicf("%s failed to apply %+v", ps.Tag, err)
 		} else {
 			log.Infof("%s apply result %+v", ps.Tag, snapshot)
 		}

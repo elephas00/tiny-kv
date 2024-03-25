@@ -52,7 +52,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		Message:     &msg,
 		RegionEpoch: d.Region().RegionEpoch,
 	}
-	log.Infof("%s send raft message %+v", d.Tag, raftMsg)
+	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
 	err := d.ctx.trans.Send(&raftMsg)
 	return err
 }
@@ -165,7 +165,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 	}
 }
 
-func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_CompactLog {
 		// modify RaftTruncatedState in RaftApplyState.
 		// schedule a task to raftlog-gc work by ScheduleCompactLog.
@@ -179,9 +179,19 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 		d.peerStorage.applyState.TruncatedState.Index = adminRequest.AdminRequest.CompactLog.CompactIndex
 		d.peerStorage.applyState.TruncatedState.Term = adminRequest.AdminRequest.CompactLog.CompactTerm
+
+		if err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
+			log.Panicf("%s failed to compactLog, detail %+v", d.Tag, d.peerStorage.applyState)
+		}
 		d.peerStorage.regionSched <- gcTask
 
-		return nil
+		return &raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+				CompactLog: &raft_cmdpb.CompactLogResponse{},
+			},
+		}
 
 	}
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
@@ -192,8 +202,11 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		}
 
 		return &raft_cmdpb.RaftCmdResponse{
-			Header:        &raft_cmdpb.RaftResponseHeader{},
-			AdminResponse: &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader},
+			Header: &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
+				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+			},
 		}
 	}
 	log.Panicf("unimplemented raft admin command")
@@ -214,7 +227,8 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 	d.ctx.storeMeta.regions[d.regionId] = clone
 	d.ctx.storeMeta.RWMutex.Unlock()
-
+	// TODO: after peer storage update, clear extra data.
+	//d.peerStorage.clearMeta(kvWB, nil)
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
 	if err != nil {
 		log.Errorf("failed to set region local state, err: %+v", err)
@@ -246,7 +260,7 @@ func cloneRegion(region *metapb.Region) *metapb.Region {
 
 func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	if d.mayExecuteDestroyPeer(entry, change) {
-		d.peer.stopped = true
+		//d.peer.stopped = true
 		d.destroyPeer()
 		return nil
 	}
@@ -322,10 +336,10 @@ func (d *peerMsgHandler) mayExecuteDestroyPeer(entry *pb.Entry, change *pb.ConfC
 	if d.PeerId() != change.NodeId {
 		return false
 	}
-	if d.RaftGroup.Raft.RaftLog.LastIndex() != entry.Index {
-		log.Errorf("%d reject to destroy, because it was restarted node.", d.PeerId())
-		return false
-	}
+	//if d.RaftGroup.Raft.RaftLog.LastIndex() != entry.Index {
+	//	log.Errorf("%d reject to destroy, because it was restarted node. lastIndex %d, conf change index %d", d.PeerId(), d.RaftGroup.Raft.RaftLog.LastIndex(), entry.Index)
+	//	return false
+	//}
 	return true
 }
 
@@ -341,7 +355,7 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry, kvWB *engine_util.Writ
 			return ErrResp(err)
 		}
 		if raftCmd.AdminRequest != nil {
-			return d.applyAdminRaftCommand(entry, &raftCmd)
+			return d.applyAdminRaftCommand(entry, &raftCmd, kvWB)
 		}
 		return d.applyNormalRaftCommand(entry, &raftCmd, kvWB)
 	}
@@ -372,7 +386,7 @@ func (d *peerMsgHandler) proposalStr() string {
 func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) error {
 
 	for _, entry := range committedEnts {
-		//log.Infof("%d, apply index:%d, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
+		//log.Infof("%s, apply index:%d, commit command index: %d, term: %d", d.Tag, d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		if entry.Index == d.peerStorage.applyState.AppliedIndex+1 {
 			kvWB := new(engine_util.WriteBatch)
 			d.peerStorage.applyState.AppliedIndex = entry.Index
@@ -561,6 +575,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 
+	lastIndex := d.nextProposalIndex()
+	lastTerm := d.Term()
+
 	// propose command.
 	if msgIsAdminRequest(msg) && msgIsChangePeerRequest(msg) {
 		if !d.msgHasSameRegion(msg) {
@@ -582,29 +599,20 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
 		}
-
+		log.Infof("%s propose a confChange command at %d", d.Tag, lastIndex)
 	} else {
 		if err = d.RaftGroup.Propose(data); err != nil {
 			log.Errorf("%d failed to propose raft command: %+v", d.PeerId(), err)
 			return
 		}
-
+		//log.Infof("%s propose a normal command at %d", d.Tag, lastIndex)
 	}
 
 	// 1.storage callback to pendingCmd(proposals).
-	var lastIndex, term uint64
-	rd := d.RaftGroup.Ready()
-	if size := len(rd.Entries); size > 0 {
-		lastIndex = rd.Entries[size-1].Index
-		term = rd.Entries[size-1].Term
-		//log.Infof("%d propose a command at %d, term %d", d.PeerId(), lastIndex, term)
-	} else {
-		log.Panic("failed to propose, there are no log in raft module.")
-	}
 
 	d.peer.proposals = append(d.peer.proposals, &proposal{
 		index: lastIndex,
-		term:  term,
+		term:  lastTerm,
 		cb:    cb,
 	})
 
@@ -724,7 +732,7 @@ func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := util.IsVoteMessage(msg.Message)
 	fromStoreID := msg.FromPeer.GetStoreId()
-
+	//log.Infof("%s receive message from %+v, details:%+v", d.Tag, msg.FromPeer, msg)
 	// Let's consider following cases with three nodes [1, 2, 3] and 1 is leader:
 	// a. 1 removes 2, 2 may still send MsgAppendResponse to 1.
 	//  We should ignore this stale message and let 2 remove itself after
