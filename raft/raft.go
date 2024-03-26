@@ -232,10 +232,7 @@ func (r *Raft) initRaftLog(config *Config) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	//if r.RaftLog.applied < r.PendingConfIndex {
-	//	log.Errorf("%s failed to send snapshot to %d, becuase config change %d not finish yet, applied: %d", r.nodeIdentifier(), to, r.PendingConfIndex, r.RaftLog.applied)
-	//	return
-	//}
+
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		//log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
@@ -243,9 +240,6 @@ func (r *Raft) sendSnapshot(to uint64) {
 	} else {
 		//log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
 	}
-	//if snapshot.Data == nil {
-	//	log.Panic("failed to send snapshot, data is nil")
-	//}
 	snapshotMsg := pb.Message{
 		From:     r.id,
 		To:       to,
@@ -724,9 +718,6 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			r.sendAppend(m.From)
 		}
 
-	//case pb.MessageType_MsgSnapshot:
-	//	r.handleSnapshot(m)
-
 	case pb.MessageType_MsgTransferLeader:
 		r.handleLeaderTransferLeader(m)
 
@@ -871,18 +862,13 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 
 	if r.Term > m.Term {
-		// reject.
-		//r.sendSnapshotResponse(m.From, true)
 		return
 	}
 	if m.Snapshot.Metadata == nil {
-		// reject.
-		//r.sendSnapshotResponse(m.From, true)
 		return
 	}
 	if r.RaftLog.pendingSnapshot != nil && r.RaftLog.pendingSnapshot.Metadata.Index == m.Snapshot.Metadata.Index && r.RaftLog.pendingSnapshot.Metadata.Term == m.Snapshot.Metadata.Term {
 		log.Infof("%s reject to handle snapshot: %+v", r.nodeIdentifier(), m)
-		//r.sendSnapshotResponse(m.From, false)
 		r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
 		return
 	}
@@ -894,7 +880,6 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 			log.Errorf("failed to get last index")
 		} else {
 			if term >= m.Snapshot.Metadata.Term {
-				//r.sendSnapshotResponse(m.From, true)
 				return
 			}
 		}
@@ -942,17 +927,6 @@ func (r *Raft) removeNode(id uint64) {
 		r.updateCommit()
 	}
 }
-
-//func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
-//	responseMsg := pb.Message{
-//		From:    r.id,
-//		To:      to,
-//		Term:    r.Term,
-//		MsgType: pb.MessageType_MsgSnapshot,
-//		Reject:  reject,
-//	}
-//	r.msgs = append(r.msgs, responseMsg)
-//}
 
 func (r *Raft) handleLeaderTransferLeader(m pb.Message) {
 	if m.From == r.id {
