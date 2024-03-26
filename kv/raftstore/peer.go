@@ -134,6 +134,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	}
 
 	raftGroup, err := raft.NewRawNode(raftCfg)
+	log.Infof("new raft node  %s, kv: %s, raft: %s ", ps.Tag, engines.KvPath, engines.RaftPath)
 	if err != nil {
 		return nil, err
 	}

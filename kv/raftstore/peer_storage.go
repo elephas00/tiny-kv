@@ -413,16 +413,16 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	// process snapshot.
 	if ready.Snapshot.Metadata != nil && ready.Snapshot.Metadata.Index > ps.raftState.LastIndex {
-		log.Infof("ps %s, snapshot state: %+v", ps.Tag, ps.snapState.StateType)
+		log.Infof("ps %s, result state: %+v", ps.Tag, ps.snapState.StateType)
 		raftWB := new(engine_util.WriteBatch)
 		kvWB := new(engine_util.WriteBatch)
-		snapshot, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		result, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
 			log.Panicf("%s failed to apply %+v", ps.Tag, err)
 		} else {
-			log.Infof("%s apply result %+v", ps.Tag, snapshot)
+			log.Infof("%s apply result %+v", ps.Tag, result)
 		}
-		return snapshot, err
+		return result, err
 	}
 
 	// Append entries and save raft hard state.

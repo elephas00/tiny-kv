@@ -197,6 +197,12 @@ func (rn *RawNode) Ready() Ready {
 		peers = append(peers, id)
 	}
 
+	for _, m := range msgs {
+		if m.MsgType == pb.MessageType_MsgSnapshot && m.Snapshot == nil {
+			log.Panic("snapshot is empty")
+		}
+	}
+
 	truncatedIndex := rn.Raft.RaftLog.getOffset()
 	term, err := rn.Raft.RaftLog.Term(truncatedIndex)
 	if err != nil {
@@ -211,6 +217,9 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if rn.Raft.RaftLog.pendingSnapshot != nil {
 		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+		if ready.Snapshot.Data == nil {
+			log.Infof("snap data is nil")
+		}
 	}
 	softState := &SoftState{RaftState: rn.Raft.State, Lead: rn.Raft.Lead}
 	if rn.softStateChanged(softState) {

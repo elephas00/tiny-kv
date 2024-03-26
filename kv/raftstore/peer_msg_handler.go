@@ -179,7 +179,7 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 		d.peerStorage.applyState.TruncatedState.Index = adminRequest.AdminRequest.CompactLog.CompactIndex
 		d.peerStorage.applyState.TruncatedState.Term = adminRequest.AdminRequest.CompactLog.CompactTerm
-
+		d.LastCompactedIdx = adminRequest.AdminRequest.CompactLog.CompactIndex
 		if err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
 			log.Panicf("%s failed to compactLog, detail %+v", d.Tag, d.peerStorage.applyState)
 		}
@@ -459,6 +459,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			d.ctx.storeMeta.regions[d.regionId] = clone
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 			d.ctx.storeMeta.RWMutex.Unlock()
+			d.LastCompactedIdx = d.peerStorage.truncatedIndex()
 		}
 	}
 

@@ -243,6 +243,9 @@ func (r *Raft) sendSnapshot(to uint64) {
 	} else {
 		//log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
 	}
+	//if snapshot.Data == nil {
+	//	log.Panic("failed to send snapshot, data is nil")
+	//}
 	snapshotMsg := pb.Message{
 		From:     r.id,
 		To:       to,
@@ -261,7 +264,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	progress := r.Prs[to]
 	if progress.Next <= r.RaftLog.getOffset() {
 		r.sendSnapshot(to)
-
+		return false
 	}
 
 	var prevLogIndex, prevLogTerm uint64
@@ -721,8 +724,8 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			r.sendAppend(m.From)
 		}
 
-	case pb.MessageType_MsgSnapshot:
-		r.handleSnapshot(m)
+	//case pb.MessageType_MsgSnapshot:
+	//	r.handleSnapshot(m)
 
 	case pb.MessageType_MsgTransferLeader:
 		r.handleLeaderTransferLeader(m)
@@ -861,28 +864,37 @@ func (r *Raft) initPeers(peers []uint64) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
-	if r.RaftLog.pendingSnapshot != nil {
-		log.Infof("%s reject to handle snapshot: %+v", r.nodeIdentifier(), m)
+
+	if m.Snapshot.Metadata == nil {
+		// ignore it.
 		return
 	}
-	log.Infof("%s triggered handle snapshot: %+v", r.nodeIdentifier(), m)
+
 	if r.Term > m.Term {
 		// reject.
-		r.sendSnapshotResponse(m.From, true)
+		//r.sendSnapshotResponse(m.From, true)
 		return
 	}
 	if m.Snapshot.Metadata == nil {
 		// reject.
-		r.sendSnapshotResponse(m.From, true)
+		//r.sendSnapshotResponse(m.From, true)
 		return
 	}
+	if r.RaftLog.pendingSnapshot != nil && r.RaftLog.pendingSnapshot.Metadata.Index == m.Snapshot.Metadata.Index && r.RaftLog.pendingSnapshot.Metadata.Term == m.Snapshot.Metadata.Term {
+		log.Infof("%s reject to handle snapshot: %+v", r.nodeIdentifier(), m)
+		//r.sendSnapshotResponse(m.From, false)
+		r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
+		return
+	}
+	log.Infof("%s triggered handle snapshot: %+v", r.nodeIdentifier(), m)
+
 	if r.RaftLog.LastIndex() >= m.Snapshot.Metadata.Index {
 		term, err := r.RaftLog.Term(r.RaftLog.LastIndex())
 		if err != nil {
 			log.Errorf("failed to get last index")
 		} else {
 			if term >= m.Snapshot.Metadata.Term {
-				r.sendSnapshotResponse(m.From, true)
+				//r.sendSnapshotResponse(m.From, true)
 				return
 			}
 		}
@@ -931,16 +943,16 @@ func (r *Raft) removeNode(id uint64) {
 	}
 }
 
-func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
-	responseMsg := pb.Message{
-		From:    r.id,
-		To:      to,
-		Term:    r.Term,
-		MsgType: pb.MessageType_MsgSnapshot,
-		Reject:  reject,
-	}
-	r.msgs = append(r.msgs, responseMsg)
-}
+//func (r *Raft) sendSnapshotResponse(to uint64, reject bool) {
+//	responseMsg := pb.Message{
+//		From:    r.id,
+//		To:      to,
+//		Term:    r.Term,
+//		MsgType: pb.MessageType_MsgSnapshot,
+//		Reject:  reject,
+//	}
+//	r.msgs = append(r.msgs, responseMsg)
+//}
 
 func (r *Raft) handleLeaderTransferLeader(m pb.Message) {
 	if m.From == r.id {
