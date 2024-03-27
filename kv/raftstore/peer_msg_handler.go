@@ -53,6 +53,10 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		RegionEpoch: d.Region().RegionEpoch,
 	}
 	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
+
+	if msg.MsgType == pb.MessageType_MsgHeartbeat {
+		//log.Infof("%s send heart to (id %d, store %d) ", d.Tag, msg.To, d.peerCache[msg.To].StoreId)
+	}
 	err := d.ctx.trans.Send(&raftMsg)
 	return err
 }
@@ -223,10 +227,10 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	regionLocalState.Region = d.Region()
 	clone := cloneRegion(d.Region())
 
-	d.ctx.storeMeta.RWMutex.Lock()
+	//d.ctx.storeMeta.RWMutex.Lock()
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 	d.ctx.storeMeta.regions[d.regionId] = clone
-	d.ctx.storeMeta.RWMutex.Unlock()
+	//d.ctx.storeMeta.RWMutex.Unlock()
 	// TODO: after peer storage update, clear extra data.
 	//d.peerStorage.clearMeta(kvWB, nil)
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
@@ -259,11 +263,6 @@ func cloneRegion(region *metapb.Region) *metapb.Region {
 }
 
 func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
-	if d.mayExecuteDestroyPeer(entry, change) {
-		//d.peer.stopped = true
-		d.destroyPeer()
-		return nil
-	}
 
 	var newPeers []*metapb.Peer
 	for _, peerNode := range d.peerStorage.region.Peers {
@@ -274,18 +273,13 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peerStorage.region.Peers = newPeers
 	clone := cloneRegion(d.Region())
 
-	d.ctx.storeMeta.RWMutex.Lock()
+	//d.ctx.storeMeta.RWMutex.Lock()
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 	d.ctx.storeMeta.regions[d.regionId] = clone
-	d.ctx.storeMeta.RWMutex.Unlock()
+	//d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
-	if change.NodeId == d.PeerId() {
-		regionLocalState.State = rspb.PeerState_Tombstone
-	} else {
-		regionLocalState.State = rspb.PeerState_Normal
-	}
-
+	regionLocalState.State = rspb.PeerState_Normal
 	regionLocalState.Region = d.Region()
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
 	if err != nil {
@@ -296,6 +290,11 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 
 	d.peer.removePeerCache(change.NodeId)
 
+	if d.mayExecuteDestroyPeer(entry, change) {
+		d.peer.stopped = true
+		kvWB.Reset()
+		d.destroyPeer()
+	}
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{},
 		AdminResponse: &raft_cmdpb.AdminResponse{
@@ -406,15 +405,12 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 				//log.Infof("%s send callback %s", d.Tag, describeProposal(prop))
 				prop.cb.Done(resp)
 			}
-
 			if d.stopped {
-				// just do nothing and return.
 				return nil
-			} else {
-				err = kvWB.WriteToDB(d.peerStorage.Engines.Kv)
-				if err != nil {
-					log.Errorf("failed to write kv, err: %+v", err)
-				}
+			}
+			err = kvWB.WriteToDB(d.peerStorage.Engines.Kv)
+			if err != nil {
+				log.Errorf("failed to write kv, err: %+v", err)
 			}
 
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
@@ -455,10 +451,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	} else {
 		if state != nil {
 			clone := cloneRegion(state.Region)
-			d.ctx.storeMeta.RWMutex.Lock()
+			//d.ctx.storeMeta.RWMutex.Lock()
 			d.ctx.storeMeta.regions[d.regionId] = clone
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-			d.ctx.storeMeta.RWMutex.Unlock()
+			//d.ctx.storeMeta.RWMutex.Unlock()
 			d.LastCompactedIdx = d.peerStorage.truncatedIndex()
 		}
 	}
@@ -481,6 +477,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
+
+	if rd.SoftState != nil && d.IsLeader() {
+		d.onSchedulerHeartbeatTick()
+	}
 
 	if d.peerStorage.raftState.HardState.Commit <= rd.Commit {
 		d.peerStorage.raftState.HardState.Commit = rd.Commit

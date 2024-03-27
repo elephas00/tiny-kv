@@ -880,18 +880,19 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 			log.Errorf("failed to get last index")
 		} else {
 			if term >= m.Snapshot.Metadata.Term {
+				r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
 				return
 			}
 		}
 
 	}
 	r.becomeFollower(r.Term, m.From)
-
-	if m.Index < r.RaftLog.entries[0].Index || m.Index > r.RaftLog.LastIndex() {
-		message := "warning: %s, trying to access index: %d, lastIncludedIndex: %d, commit: %d"
-		log.Errorf(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
-		return
-	}
+	//
+	//if m.Index < r.RaftLog.entries[0].Index || m.Index > r.RaftLog.LastIndex() {
+	//	message := "warning: %s, trying to access index: %d, lastIncludedIndex: %d, commit: %d"
+	//	log.Errorf(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
+	//	return
+	//}
 
 	r.compressRaftLog(m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term)
 

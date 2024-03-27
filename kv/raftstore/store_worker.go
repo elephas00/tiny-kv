@@ -297,7 +297,7 @@ func (d *storeWorker) scheduleGCSnap(regionID uint64, keys []snap.SnapKeyWithSen
 		// The snapshot exists because MsgAppend has been rejected. So the
 		// peer must have been exist. But now it's disconnected, so the peer
 		// has to be destroyed instead of being created.
-		log.Infof("region %d is disconnected, remove snaps %v", regionID, keys)
+		log.Infof("[store %d] region %d is disconnected, remove snaps %v", d.id, regionID, keys)
 		for _, pair := range keys {
 			key := pair.SnapKey
 			isSending := pair.IsSending

@@ -69,7 +69,6 @@ func (t *MockTransport) ClearFilters() {
 func (t *MockTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	t.RLock()
 	defer t.RUnlock()
-
 	for _, filter := range t.filters {
 		if !filter.Before(msg) {
 			return errors.New(fmt.Sprintf("message %+v is dropped", msg))
@@ -118,6 +117,7 @@ func (t *MockTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	if !found {
 		return errors.New(fmt.Sprintf("store %d is closed", toStore))
 	}
+
 	router.SendRaftMessage(msg)
 
 	for _, filter := range t.filters {
