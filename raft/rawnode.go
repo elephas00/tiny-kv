@@ -134,6 +134,11 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 		return ErrProposalDropped
 	}
 
+	if rn.Raft.PendingConfIndex > rn.Raft.RaftLog.applied {
+		log.Errorf("%s reject to propose conf change, only one conf change processing at one time, previous %d,", rn.Raft.nodeIdentifier(), rn.Raft.PendingConfIndex)
+		return ErrProposalDropped
+	}
+
 	log.Infof("%s receive propose conf change: %+v, transferee %d", rn.Raft.nodeIdentifier(), cc, rn.Raft.leadTransferee)
 	data, err := cc.Marshal()
 	if err != nil {
