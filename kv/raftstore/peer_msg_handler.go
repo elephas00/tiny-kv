@@ -606,7 +606,23 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		// according to chapter 4 of phd thesis of Diego
 		// there seems need a learner role.
 		// _ = d.applyConfChangeRaftCommand(pb.Entry{}, confChange, new(engine_util.WriteBatch))
-		d.RaftGroup.ApplyConfChange(confChange)
+		// add peer
+		if confChange.ChangeType == pb.ConfChangeType_AddNode {
+			newPeer := msg.AdminRequest.ChangePeer.Peer
+			d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
+			d.insertPeerCache(newPeer)
+			regionLocalState := new(rspb.RegionLocalState)
+			regionLocalState.State = rspb.PeerState_Normal
+			regionLocalState.Region = d.Region()
+			clone := cloneRegion(d.Region())
+
+			//d.ctx.storeMeta.RWMutex.Lock()
+			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+			d.ctx.storeMeta.regions[d.regionId] = clone
+			//d.ctx.storeMeta.RWMutex.Unlock()
+			d.RaftGroup.ApplyConfChange(confChange)
+		}
+
 		log.Infof("%s propose a confChange command at %d", d.Tag, lastIndex)
 	} else {
 		if err = d.RaftGroup.Propose(data); err != nil {
