@@ -601,7 +601,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		if confChange.ChangeType == pb.ConfChangeType_AddNode {
 			if !d.peer.AnyNewPeerCatchUp(confChange.NodeId) {
 				log.Errorf("%s failed to propose conf change add node raft command, because node %d node catch up yet.", d.Tag, confChange.NodeId)
-				d.peerStorage.region.RegionEpoch.ConfVer = msg.Header.RegionEpoch.ConfVer + 1
 				newPeer := msg.AdminRequest.ChangePeer.Peer
 				d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
 				d.insertPeerCache(newPeer)
