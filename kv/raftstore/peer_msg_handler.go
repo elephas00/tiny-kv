@@ -307,7 +307,7 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	//log.Infof("%d is applying admin raft command index: %d, term %d, command type: %+v", d.PeerId(), entry.Index, entry.Term, change.ChangeType)
 	var resp *raft_cmdpb.RaftCmdResponse
-	d.peerStorage.region.RegionEpoch.ConfVer++
+
 	//log.Infof("conf change details: %+v", change)
 	//log.Errorf("%s change region epoch confversion to %d, entry index: %d", d.Tag, d.peerStorage.region.RegionEpoch.ConfVer, entry.Index)
 
@@ -316,6 +316,7 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 	if err != nil {
 		log.Panicf("%s failed to apply conf change command, err: %+v", d.Tag, err)
 	}
+	d.peerStorage.region.RegionEpoch.ConfVer = confChangeRequest.Header.RegionEpoch.ConfVer + 1
 	if change.ChangeType == pb.ConfChangeType_AddNode {
 		resp = d.applyAddNodeConfChangeRaftCommand(&entry, &change, confChangeRequest.AdminRequest.ChangePeer, kvWB)
 	}
@@ -591,15 +592,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			log.Errorf("failed to propose conf change raft command: %+v,", err)
 			return
 		}
-
-		if err = d.RaftGroup.ProposeConfChange(pb.ConfChange{
+		confChange := pb.ConfChange{
 			ChangeType: msg.AdminRequest.ChangePeer.ChangeType,
 			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
 			Context:    context,
-		}); err != nil {
+		}
+		if err = d.RaftGroup.ProposeConfChange(confChange); err != nil {
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
 		}
+		// TODO: mannually apply config change command.
+		// how to abort a failed config change ?
+		// according to chapter 4 of phd thesis of Diego
+		// there seems need a learner role.
+		// _ = d.applyConfChangeRaftCommand(pb.Entry{}, confChange, new(engine_util.WriteBatch))
+		d.RaftGroup.ApplyConfChange(confChange)
 		log.Infof("%s propose a confChange command at %d", d.Tag, lastIndex)
 	} else {
 		if err = d.RaftGroup.Propose(data); err != nil {

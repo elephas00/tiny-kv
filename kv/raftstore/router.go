@@ -1,7 +1,6 @@
 package raftstore
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	"sync"
 	"sync/atomic"
 
@@ -64,17 +63,17 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
 		return errPeerNotFound
 	}
-	if msg.Type == message.MsgTypeRaftMessage {
-		raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
-		log.Infof("raft message send from (id %d, store %d), to (id %d, store %d)", raftMsg.FromPeer.Id, raftMsg.FromPeer.StoreId, raftMsg.ToPeer.Id, raftMsg.ToPeer.StoreId)
-	}
+	//if msg.Type == message.MsgTypeRaftMessage {
+	//	raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
+	//	log.Infof("raft message send from (id %d, store %d), to (id %d, store %d)", raftMsg.FromPeer.Id, raftMsg.FromPeer.StoreId, raftMsg.ToPeer.Id, raftMsg.ToPeer.StoreId)
+	//}
 
 	pr.peerSender <- msg
 	return nil
 }
 
 func (pr *router) sendStore(msg message.Msg) {
-	log.Infof(" send RaftStoreMsg msg: %+v", msg)
+	//log.Infof(" send RaftStoreMsg msg: %+v", msg)
 
 	pr.storeSender <- msg
 }
