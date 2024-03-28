@@ -608,6 +608,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		// _ = d.applyConfChangeRaftCommand(pb.Entry{}, confChange, new(engine_util.WriteBatch))
 		// add peer
 		if confChange.ChangeType == pb.ConfChangeType_AddNode {
+			d.peerStorage.region.RegionEpoch.ConfVer = msg.Header.RegionEpoch.ConfVer + 1
 			newPeer := msg.AdminRequest.ChangePeer.Peer
 			d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
 			d.insertPeerCache(newPeer)
