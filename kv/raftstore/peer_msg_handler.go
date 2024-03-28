@@ -597,6 +597,9 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
 			Context:    context,
 		}
+		if msg.Header.RegionEpoch.ConfVer < d.peerStorage.region.RegionEpoch.ConfVer {
+			return
+		}
 		if err = d.RaftGroup.ProposeConfChange(confChange); err != nil {
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
