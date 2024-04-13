@@ -61,10 +61,14 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 	return err
 }
 
-func (d *peerMsgHandler) findProposal(entry pb.Entry) (*proposal, bool) {
+func (d *peerMsgHandler) findProposal(entry pb.Entry, delete bool) (*proposal, bool) {
 	// TODO: this find function could with time complexity o(1)
-	for _, prop := range d.proposals {
+	for i, prop := range d.proposals {
 		if prop.term == entry.Term && prop.index == entry.Index {
+			// Found the proposal, delete all proposals before this one
+			if delete {
+				d.proposals = d.proposals[i+1:]
+			}
 			return prop, false
 		}
 	}
@@ -150,7 +154,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 					Snap:    resp,
 				})
 			} else {
-				prop, notFound := d.findProposal(entry)
+				prop, notFound := d.findProposal(entry, false)
 				if !notFound {
 					prop.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 				}
@@ -233,10 +237,10 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	regionLocalState.Region = d.Region()
 	clone := cloneRegion(d.Region())
 
-	//d.ctx.storeMeta.RWMutex.Lock()
+	d.ctx.storeMeta.RWMutex.Lock()
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 	d.ctx.storeMeta.regions[d.regionId] = clone
-	//d.ctx.storeMeta.RWMutex.Unlock()
+	d.ctx.storeMeta.RWMutex.Unlock()
 	// TODO: after peer storage update, clear extra data.
 	//d.peerStorage.clearMeta(kvWB, nil)
 	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
@@ -311,7 +315,7 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 		return d.applyRemoveOtherNodeConfChange(entry, change, kvWB)
 	}
 	d.peer.stopped = true
-	//kvWB.Reset()
+	kvWB.Reset()
 	d.destroyPeer()
 	return nil
 }
@@ -408,14 +412,13 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 			}
 
 			resp := d.applyRaftCommand(entry, kvWB)
-			prop, notFound := d.findProposal(entry)
+			prop, notFound := d.findProposal(entry, true)
 			if notFound {
 				if d.IsLeader() {
 					log.Errorf("%d failed to find call back for entry %d, term: %d", d.PeerId(), entry.Index, entry.Term)
-					d.printProposals()
 				}
 			} else {
-				//log.Infof("%s send callback %s", d.Tag, describeProposal(prop))
+				//log.Infof("%s send callback %s, resp: %+v", d.Tag, describeProposal(prop), resp)
 				prop.cb.Done(resp)
 			}
 			if d.stopped {
@@ -428,9 +431,8 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
 		} else {
-			log.Panicf("%d, apply index:%d failed, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
+			log.Panicf("%d, apply index:%d failed, apply index:%d, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		}
-
 	}
 	return nil
 }
@@ -464,10 +466,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	} else {
 		if state != nil {
 			clone := cloneRegion(state.Region)
-			//d.ctx.storeMeta.RWMutex.Lock()
+			d.ctx.storeMeta.RWMutex.Lock()
 			d.ctx.storeMeta.regions[d.regionId] = clone
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-			//d.ctx.storeMeta.RWMutex.Unlock()
+			d.ctx.storeMeta.RWMutex.Unlock()
 			d.LastCompactedIdx = d.peerStorage.truncatedIndex()
 		}
 	}

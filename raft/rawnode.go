@@ -18,8 +18,6 @@ import (
 	"errors"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"math/rand"
-	"time"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -105,31 +103,7 @@ func (rn *RawNode) Propose(data []byte) error {
 
 // ProposeConfChange proposes a config change.
 func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
-	if rn.Raft.State == StateLeader && cc.ChangeType == pb.ConfChangeType_RemoveNode && rn.Raft.id == cc.NodeId && rn.Raft.leadTransferee == None {
-		keys := make([]uint64, 0, len(rn.Raft.Prs))
 
-		for key := range rn.Raft.Prs {
-			keys = append(keys, key)
-		}
-
-		// 设置随机数种子
-		rand.Seed(time.Now().UnixNano())
-
-		// 从切片中随机选择一个键
-		randomIndex := rand.Intn(len(keys))
-		randomKey := keys[randomIndex]
-		if randomKey == rn.Raft.id {
-			return ErrProposalDropped
-		}
-
-		rn.Raft.Step(pb.Message{
-			From:    randomKey,
-			To:      rn.Raft.id,
-			MsgType: pb.MessageType_MsgTransferLeader,
-		})
-		log.Infof("%d will be remove from region before remove, transfer its leadership to peer %d", rn.Raft.id, randomKey)
-		return ErrProposalDropped
-	}
 	if rn.Raft.leadTransferee != None {
 		return ErrProposalDropped
 	}
