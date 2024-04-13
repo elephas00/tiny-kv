@@ -219,10 +219,10 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, changePeer *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 
-	if !d.peer.AnyNewPeerCatchUp(change.NodeId) && d.IsLeader() {
-		kvWB.Reset()
-		return ErrResp(errors.New("failed to apply conf change, because new peer not catch up yet."))
-	}
+	//if !d.peer.AnyNewPeerCatchUp(change.NodeId) && d.IsLeader() {
+	//	kvWB.Reset()
+	//	return ErrResp(errors.New("failed to apply conf change, because new peer not catch up yet."))
+	//}
 
 	d.peerStorage.region.RegionEpoch.ConfVer++
 	newPeer := changePeer.Peer
@@ -268,7 +268,8 @@ func cloneRegion(region *metapb.Region) *metapb.Region {
 	return clone
 }
 
-func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) applyRemoveOtherNodeConfChange(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+
 	d.peerStorage.region.RegionEpoch.ConfVer++
 	var newPeers []*metapb.Peer
 	for _, peerNode := range d.peerStorage.region.Peers {
@@ -279,10 +280,10 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peerStorage.region.Peers = newPeers
 	clone := cloneRegion(d.Region())
 
-	//d.ctx.storeMeta.RWMutex.Lock()
+	d.ctx.storeMeta.RWMutex.Lock()
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 	d.ctx.storeMeta.regions[d.regionId] = clone
-	//d.ctx.storeMeta.RWMutex.Unlock()
+	d.ctx.storeMeta.RWMutex.Unlock()
 
 	regionLocalState := new(rspb.RegionLocalState)
 	regionLocalState.State = rspb.PeerState_Normal
@@ -296,11 +297,6 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 
 	d.peer.removePeerCache(change.NodeId)
 
-	if d.mayExecuteDestroyPeer(entry, change) {
-		d.peer.stopped = true
-		kvWB.Reset()
-		d.destroyPeer()
-	}
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{},
 		AdminResponse: &raft_cmdpb.AdminResponse{
@@ -308,6 +304,16 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 			ChangePeer: &raft_cmdpb.ChangePeerResponse{Region: d.Region()},
 		},
 	}
+}
+
+func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
+	if change.NodeId != d.PeerId() {
+		return d.applyRemoveOtherNodeConfChange(entry, change, kvWB)
+	}
+	d.peer.stopped = true
+	//kvWB.Reset()
+	d.destroyPeer()
+	return nil
 }
 
 func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.ConfChange, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
@@ -567,6 +573,10 @@ func msgIsChangePeerRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
 	return msg.AdminRequest.ChangePeer != nil
 }
 
+func msgIsTransferLeaderRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
+	return msg.AdminRequest.TransferLeader != nil
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -585,7 +595,21 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 	lastIndex := d.nextProposalIndex()
 	lastTerm := d.Term()
+	if msgIsAdminRequest(msg) && msgIsTransferLeaderRequest(msg) {
 
+		d.RaftGroup.TransferLeader(msg.AdminRequest.TransferLeader.Peer.GetId())
+		if d.PeerId() == msg.AdminRequest.TransferLeader.Peer.GetId() {
+			cb.Done(&raft_cmdpb.RaftCmdResponse{
+				Header: &raft_cmdpb.RaftResponseHeader{},
+				AdminResponse: &raft_cmdpb.AdminResponse{
+					CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
+					TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+				},
+			})
+		}
+
+		return
+	}
 	// propose command.
 	if msgIsAdminRequest(msg) && msgIsChangePeerRequest(msg) {
 		if !d.msgHasSameRegion(msg) {
@@ -603,28 +627,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
 			Context:    context,
 		}
-		//
-		//if confChange.ChangeType == pb.ConfChangeType_AddNode {
-		//	if !d.peer.AnyNewPeerCatchUp(confChange.NodeId) {
-		//		log.Errorf("%s failed to propose conf change add node raft command, because node %d node catch up yet.", d.Tag, confChange.NodeId)
-		//		newPeer := msg.AdminRequest.ChangePeer.Peer
-		//		d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
-		//		d.insertPeerCache(newPeer)
-		//		regionLocalState := new(rspb.RegionLocalState)
-		//		regionLocalState.State = rspb.PeerState_Normal
-		//		regionLocalState.Region = d.Region()
-		//		clone := cloneRegion(d.Region())
-		//
-		//		//d.ctx.storeMeta.RWMutex.Lock()
-		//		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-		//		d.ctx.storeMeta.regions[d.regionId] = clone
-		//		//d.ctx.storeMeta.RWMutex.Unlock()
-		//		d.RaftGroup.ApplyConfChange(confChange)
-		//		return
-		//	}
-		//
-		//}
-
 		if err = d.RaftGroup.ProposeConfChange(confChange); err != nil {
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)
 			return
