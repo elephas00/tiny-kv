@@ -342,6 +342,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		HardState: &eraftpb.HardState{
 			Term:   snapshot.Metadata.Term,
 			Commit: snapshot.Metadata.Index,
+			Vote:   raft.None,
 		},
 		LastIndex: snapshot.Metadata.Index,
 		LastTerm:  snapshot.Metadata.Term,
@@ -399,6 +400,11 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	if success {
 		kvWB.MustWriteToDB(ps.Engines.Kv)
 		raftWB.MustWriteToDB(ps.Engines.Raft)
+
+		raftState, _ := meta.InitRaftLocalState(ps.Engines.Raft, ps.region)
+		if raftState.HardState == nil || raft.IsEmptyHardState(*raftState.HardState) {
+			log.Panicf("%s failed to apply snapshot, because hard state is empty.", ps.Tag)
+		}
 		return result, nil
 	} else {
 		return nil, errors.New("failed to apply snapshot")
@@ -422,6 +428,9 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		} else {
 			log.Infof("%s apply result %+v", ps.Tag, result)
 		}
+		if ps.raftState.HardState == nil || raft.IsEmptyHardState(*ps.raftState.HardState) {
+			log.Panicf("%s failed to apply snapshot, because hard state is empty.", ps.Tag)
+		}
 		return result, err
 	}
 
@@ -436,7 +445,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	// persist raft state.
 	raftState := new(rspb.RaftLocalState)
-	raftState.HardState = new(eraftpb.HardState)
 
 	if len(ready.Entries) > 0 {
 		lastLogIndex := len(ready.Entries) - 1
@@ -447,9 +455,14 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		raftState.LastTerm = ps.raftState.LastTerm
 	}
 
-	raftState.HardState.Commit = ready.HardState.Commit
-	raftState.HardState.Term = ready.HardState.Term
-	raftState.HardState.Vote = ready.HardState.Vote
+	if !raft.IsEmptyHardState(ready.HardState) {
+		raftState.HardState = new(eraftpb.HardState)
+		raftState.HardState.Commit = ready.HardState.Commit
+		raftState.HardState.Term = ready.HardState.Term
+		raftState.HardState.Vote = ready.HardState.Vote
+	} else {
+		raftState.HardState = ps.raftState.HardState
+	}
 
 	err = raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), raftState)
 	if err != nil {

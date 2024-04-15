@@ -122,6 +122,9 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	if err != nil {
 		return nil, err
 	}
+	if ps.isInitialized() && (ps.raftState.HardState == nil || raft.IsEmptyHardState(*ps.raftState.HardState)) {
+		return nil, errors.New("failed to new peer storage because hard state is empty.")
+	}
 
 	appliedIndex := ps.AppliedIndex()
 
