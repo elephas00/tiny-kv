@@ -63,18 +63,12 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
 		return errPeerNotFound
 	}
-	//if msg.Type == message.MsgTypeRaftMessage {
-	//	raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
-	//	log.Infof("raft message send from (id %d, store %d), to (id %d, store %d)", raftMsg.FromPeer.Id, raftMsg.FromPeer.StoreId, raftMsg.ToPeer.Id, raftMsg.ToPeer.StoreId)
-	//}
 
 	pr.peerSender <- msg
 	return nil
 }
 
 func (pr *router) sendStore(msg message.Msg) {
-	//log.Infof(" send RaftStoreMsg msg: %+v", msg)
-
 	pr.storeSender <- msg
 }
 
@@ -96,9 +90,6 @@ func (r *RaftstoreRouter) SendRaftMessage(msg *raft_serverpb.RaftMessage) error 
 	regionID := msg.RegionId
 	if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeRaftMessage, regionID, msg)) != nil {
 		r.router.sendStore(message.NewPeerMsg(message.MsgTypeStoreRaftMessage, regionID, msg))
-	} else {
-		//raftMsg := msg
-		//log.Infof("raft message send from (id %d, store %d), to (id %d, store %d)", raftMsg.FromPeer.Id, raftMsg.FromPeer.StoreId, raftMsg.ToPeer.Id, raftMsg.ToPeer.StoreId)
 	}
 	return nil
 

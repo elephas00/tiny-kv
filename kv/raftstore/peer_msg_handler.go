@@ -2,24 +2,24 @@ package raftstore
 
 import (
 	"fmt"
-	"github.com/golang/protobuf/proto"
-	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
-	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"strconv"
-	"time"
-
 	"github.com/Connor1996/badger/y"
+	"github.com/golang/protobuf/proto"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/errorpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
+	"strconv"
+	"time"
 )
 
 type PeerTick int
@@ -101,6 +101,37 @@ func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*r
 
 func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	var responses []*raft_cmdpb.Response
+	// check key in current region
+	curRegion := d.Region()
+	for _, req := range raftCmd.Requests {
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			get := req.GetGet()
+			if engine_util.ExceedEndKey(get.GetKey(), curRegion.GetEndKey()) {
+				return &raft_cmdpb.RaftCmdResponse{
+					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: get.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Responses: responses,
+				}
+			}
+		case raft_cmdpb.CmdType_Put:
+			put := req.GetPut()
+			if engine_util.ExceedEndKey(put.GetKey(), curRegion.GetEndKey()) {
+				return &raft_cmdpb.RaftCmdResponse{
+					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: put.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Responses: responses,
+				}
+			}
+		case raft_cmdpb.CmdType_Delete:
+			del := req.GetDelete()
+			if engine_util.ExceedEndKey(del.GetKey(), curRegion.GetEndKey()) {
+				return &raft_cmdpb.RaftCmdResponse{
+					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: del.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Responses: responses,
+				}
+			}
+		}
+	}
+
 	for _, req := range raftCmd.Requests {
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Get:
@@ -202,6 +233,7 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		}
 
 	}
+	// TODO: this code will never be called , remove it.
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
 
 		if d.IsLeader() {
@@ -216,6 +248,89 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 				TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
 			},
 		}
+	}
+
+	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_Split {
+		splitRequest := adminRequest.AdminRequest.Split
+
+		region := d.Region()
+		region.RegionEpoch.Version++
+		region.RegionEpoch.ConfVer = InitEpochConfVer
+		newRegion := cloneRegion(region)
+
+		newRegion.StartKey = splitRequest.SplitKey
+		newRegion.EndKey = region.EndKey
+		newRegion.Id = splitRequest.NewRegionId
+		newRegion.RegionEpoch.ConfVer = InitEpochConfVer
+		newRegion.RegionEpoch.Version = InitEpochVer
+
+		for i := range splitRequest.NewPeerIds {
+			newRegion.Peers[i].Id = splitRequest.NewPeerIds[i]
+		}
+
+		region.EndKey = splitRequest.SplitKey
+		log.Errorf(" split request peers: %+v, new region peers: %+v", splitRequest.NewPeerIds, newRegion.Peers)
+
+		regionLocalState := new(rspb.RegionLocalState)
+		regionLocalState.State = rspb.PeerState_Normal
+		regionLocalState.Region = d.Region()
+		err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
+		if err != nil {
+			log.Panicf("%s failed to split region, error: %+v", d.Tag, err)
+		}
+
+		newRegionLocalState := new(rspb.RegionLocalState)
+		newRegionLocalState.State = rspb.PeerState_Normal
+		newRegionLocalState.Region = newRegion
+		err = kvWB.SetMeta(meta.RegionStateKey(newRegion.Id), newRegionLocalState)
+		if err != nil {
+			log.Panicf("%s failed to split region, error: %+v", d.Tag, err)
+		}
+		kvWB.MustWriteToDB(d.ctx.engine.Kv)
+		//
+		localState, err := meta.GetRegionLocalState(d.ctx.engine.Kv, region.Id)
+		log.Errorf("old region state: %+v", localState)
+		state, err := meta.GetRegionLocalState(d.ctx.engine.Kv, newRegion.Id)
+		log.Errorf("new region state: %+v", state)
+
+		regions := []*metapb.Region{}
+		d.ctx.storeMeta.Lock()
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+		d.ctx.storeMeta.regions[d.regionId] = region
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
+		d.ctx.storeMeta.regions[newRegion.Id] = newRegion
+		for _, r := range d.ctx.storeMeta.regions {
+			regions = append(regions, r)
+		}
+		d.ctx.storeMeta.Unlock()
+
+		newPeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		for _, p := range newRegion.Peers {
+			newPeer.insertPeerCache(p)
+		}
+
+		if err != nil {
+			log.Panicf("%d  failed to create region %d", d.storeID(), newRegion.Id)
+		} else {
+			log.Errorf("%d create new peer %+v", d.storeID(), newPeer.Meta)
+		}
+		d.ctx.router.register(newPeer)
+		err = d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
+		if err != nil {
+			log.Panicf("%d failed to create region %d ", d.storeID(), newRegion.Id)
+		}
+		kvWB.Reset()
+
+		return &raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{},
+			AdminResponse: &raft_cmdpb.AdminResponse{
+				CmdType: raft_cmdpb.AdminCmdType_Split,
+				Split: &raft_cmdpb.SplitResponse{
+					Regions: regions,
+				},
+			},
+		}
+
 	}
 	log.Panicf("unimplemented raft admin command")
 	return nil
