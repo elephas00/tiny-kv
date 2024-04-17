@@ -444,7 +444,7 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.leadTransferee = None
 	r.Lead = r.id
-	log.Infof("%s become leader", r.nodeIdentifier())
+	//log.Infof("%s become leader", r.nodeIdentifier())
 	// initialize leader data structure.
 	for id := range r.Prs {
 		progress := r.Prs[id]

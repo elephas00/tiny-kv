@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/Connor1996/badger/y"
 	"github.com/golang/protobuf/proto"
@@ -18,7 +19,9 @@ import (
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -103,29 +106,84 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 	var responses []*raft_cmdpb.Response
 	// check key in current region
 	curRegion := d.Region()
+	if err := util.CheckRegionEpoch(raftCmd, curRegion, true); err != nil {
+		regions := []*metapb.Region{}
+		d.ctx.storeMeta.Lock()
+		for _, r := range d.ctx.storeMeta.regions {
+			regions = append(regions, r)
+		}
+		d.ctx.storeMeta.Unlock()
+		return &raft_cmdpb.RaftCmdResponse{
+			Header: &raft_cmdpb.RaftResponseHeader{
+				Error: &errorpb.Error{
+					Message: "",
+					EpochNotMatch: &errorpb.EpochNotMatch{
+						CurrentRegions: regions,
+					},
+				},
+			},
+		}
+	}
+
 	for _, req := range raftCmd.Requests {
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Get:
 			get := req.GetGet()
 			if engine_util.ExceedEndKey(get.GetKey(), curRegion.GetEndKey()) {
+				//||				!engine_util.ExceedEndKey(get.GetKey(), curRegion.GetStartKey())
+				err := &errorpb.KeyNotInRegion{
+					Key:      get.GetKey(),
+					RegionId: curRegion.GetId(),
+					StartKey: curRegion.GetStartKey(),
+					EndKey:   curRegion.GetEndKey(),
+				}
 				return &raft_cmdpb.RaftCmdResponse{
-					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: get.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Header: &raft_cmdpb.RaftResponseHeader{
+						Error: &errorpb.Error{
+							Message:        err.String(),
+							KeyNotInRegion: err,
+						},
+					},
 					Responses: responses,
 				}
 			}
 		case raft_cmdpb.CmdType_Put:
 			put := req.GetPut()
 			if engine_util.ExceedEndKey(put.GetKey(), curRegion.GetEndKey()) {
+				//|| !engine_util.ExceedEndKey(put.GetKey(), curRegion.GetStartKey())
+				err := &errorpb.KeyNotInRegion{
+					Key:      put.GetKey(),
+					RegionId: curRegion.GetId(),
+					StartKey: curRegion.GetStartKey(),
+					EndKey:   curRegion.GetEndKey(),
+				}
 				return &raft_cmdpb.RaftCmdResponse{
-					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: put.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Header: &raft_cmdpb.RaftResponseHeader{
+						Error: &errorpb.Error{
+							Message:        err.String(),
+							KeyNotInRegion: err,
+						},
+					},
 					Responses: responses,
 				}
 			}
 		case raft_cmdpb.CmdType_Delete:
 			del := req.GetDelete()
 			if engine_util.ExceedEndKey(del.GetKey(), curRegion.GetEndKey()) {
+				//||!engine_util.ExceedEndKey(del.GetKey(), curRegion.GetStartKey())
+				err := &errorpb.KeyNotInRegion{
+					Key:      del.GetKey(),
+					RegionId: curRegion.GetId(),
+					StartKey: curRegion.GetStartKey(),
+					EndKey:   curRegion.GetEndKey(),
+				}
 				return &raft_cmdpb.RaftCmdResponse{
-					Header:    &raft_cmdpb.RaftResponseHeader{Error: &errorpb.Error{Message: "", KeyNotInRegion: &errorpb.KeyNotInRegion{Key: del.GetKey(), RegionId: curRegion.GetId(), StartKey: curRegion.GetStartKey(), EndKey: curRegion.GetEndKey()}}},
+					Header: &raft_cmdpb.RaftResponseHeader{
+						Error: &errorpb.Error{
+							Message:        err.String(),
+							KeyNotInRegion: err,
+						},
+					},
 					Responses: responses,
 				}
 			}
@@ -251,32 +309,49 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 	}
 
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_Split {
-		splitRequest := adminRequest.AdminRequest.Split
+		curRegion := d.Region()
 
-		region := d.Region()
-		region.RegionEpoch.Version++
-		region.RegionEpoch.ConfVer = InitEpochConfVer
-		newRegion := cloneRegion(region)
+		splitRequest := adminRequest.AdminRequest.Split
+		if bytes.Equal(splitRequest.GetSplitKey(), curRegion.GetEndKey()) {
+			regions := []*metapb.Region{}
+			d.ctx.storeMeta.Lock()
+			for _, r := range d.ctx.storeMeta.regions {
+				regions = append(regions, r)
+			}
+			d.ctx.storeMeta.Unlock()
+			return &raft_cmdpb.RaftCmdResponse{
+				Header: &raft_cmdpb.RaftResponseHeader{
+					Error: &errorpb.Error{
+						Message:      "",
+						StaleCommand: &errorpb.StaleCommand{},
+					},
+				},
+			}
+		}
+
+		curRegion.RegionEpoch.Version++
+		curRegion.RegionEpoch.ConfVer = InitEpochConfVer
+		newRegion := cloneRegion(curRegion)
 
 		newRegion.StartKey = splitRequest.SplitKey
-		newRegion.EndKey = region.EndKey
+		newRegion.EndKey = curRegion.EndKey
 		newRegion.Id = splitRequest.NewRegionId
 		newRegion.RegionEpoch.ConfVer = InitEpochConfVer
-		newRegion.RegionEpoch.Version = InitEpochVer
+		newRegion.RegionEpoch.Version = curRegion.RegionEpoch.Version
 
 		for i := range splitRequest.NewPeerIds {
 			newRegion.Peers[i].Id = splitRequest.NewPeerIds[i]
 		}
 
-		region.EndKey = splitRequest.SplitKey
-		log.Errorf(" split request peers: %+v, new region peers: %+v", splitRequest.NewPeerIds, newRegion.Peers)
+		curRegion.EndKey = splitRequest.SplitKey
+		//log.Errorf("%s split request peers: %+v, new curRegion peers: %+v", d.Tag, splitRequest.NewPeerIds, newRegion.Peers)
 
 		regionLocalState := new(rspb.RegionLocalState)
 		regionLocalState.State = rspb.PeerState_Normal
 		regionLocalState.Region = d.Region()
 		err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
 		if err != nil {
-			log.Panicf("%s failed to split region, error: %+v", d.Tag, err)
+			log.Panicf("%s failed to split curRegion, error: %+v", d.Tag, err)
 		}
 
 		newRegionLocalState := new(rspb.RegionLocalState)
@@ -284,19 +359,14 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		newRegionLocalState.Region = newRegion
 		err = kvWB.SetMeta(meta.RegionStateKey(newRegion.Id), newRegionLocalState)
 		if err != nil {
-			log.Panicf("%s failed to split region, error: %+v", d.Tag, err)
+			log.Panicf("%s failed to split curRegion, error: %+v", d.Tag, err)
 		}
 		kvWB.MustWriteToDB(d.ctx.engine.Kv)
-		//
-		localState, err := meta.GetRegionLocalState(d.ctx.engine.Kv, region.Id)
-		log.Errorf("old region state: %+v", localState)
-		state, err := meta.GetRegionLocalState(d.ctx.engine.Kv, newRegion.Id)
-		log.Errorf("new region state: %+v", state)
 
 		regions := []*metapb.Region{}
 		d.ctx.storeMeta.Lock()
-		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
-		d.ctx.storeMeta.regions[d.regionId] = region
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: curRegion})
+		d.ctx.storeMeta.regions[d.regionId] = curRegion
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
 		d.ctx.storeMeta.regions[newRegion.Id] = newRegion
 		for _, r := range d.ctx.storeMeta.regions {
@@ -305,22 +375,36 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		d.ctx.storeMeta.Unlock()
 
 		newPeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
+		if err != nil {
+			log.Panicf("%d  failed to create curRegion %d", d.storeID(), newRegion.Id)
+		}
+
 		for _, p := range newRegion.Peers {
 			newPeer.insertPeerCache(p)
 		}
 
-		if err != nil {
-			log.Panicf("%d  failed to create region %d", d.storeID(), newRegion.Id)
-		} else {
-			log.Errorf("%d create new peer %+v", d.storeID(), newPeer.Meta)
-		}
 		d.ctx.router.register(newPeer)
 		err = d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
 		if err != nil {
-			log.Panicf("%d failed to create region %d ", d.storeID(), newRegion.Id)
+			log.Panicf("%d failed to create curRegion %d ", d.storeID(), newRegion.Id)
 		}
 		kvWB.Reset()
+		d.peerStorage.clearExtraData(curRegion)
+		if d.IsLeader() {
+			less := func(i, j int) bool {
+				// 按照 startkey 进行比较
+				startKeyComparison := strings.Compare(string(regions[i].StartKey), string(regions[j].StartKey))
+				if startKeyComparison != 0 {
+					return startKeyComparison < 0
+				}
+				// 如果 startkey 相同，则按照 endkey 进行比较
+				return strings.Compare(string(regions[i].EndKey), string(regions[j].EndKey)) < 0
+			}
 
+			// 使用 sort.Slice 进行排序
+			sort.Slice(regions, less)
+			//log.Errorf("%s split finished, regions: %+v", d.Tag, regions)
+		}
 		return &raft_cmdpb.RaftCmdResponse{
 			Header: &raft_cmdpb.RaftResponseHeader{},
 			AdminResponse: &raft_cmdpb.AdminResponse{
@@ -479,12 +563,20 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry, kvWB *engine_util.Writ
 
 	if entry.EntryType == pb.EntryType_EntryNormal {
 		// apply normal requests
+		if entry.Data == nil {
+			return ErrResp(errors.New("empty entry"))
+		}
 		var raftCmd raft_cmdpb.RaftCmdRequest
-		err := proto.Unmarshal(entry.Data, &raftCmd)
-		if err != nil {
+
+		if err := proto.Unmarshal(entry.Data, &raftCmd); err != nil {
 			log.Errorf("%d failed to apply raft command index: %d, term: %d, err:%+v", d.PeerId(), entry.Index, entry.Term, err)
 			return ErrResp(err)
 		}
+
+		if err := util.CheckRegionEpoch(&raftCmd, d.Region(), true); err != nil {
+			return ErrResp(err)
+		}
+
 		if raftCmd.AdminRequest != nil {
 			return d.applyAdminRaftCommand(entry, &raftCmd, kvWB)
 		}
@@ -529,9 +621,9 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 			resp := d.applyRaftCommand(entry, kvWB)
 			prop, notFound := d.findProposal(entry, true)
 			if notFound {
-				if d.IsLeader() {
-					log.Errorf("%d failed to find call back for entry %d, term: %d", d.PeerId(), entry.Index, entry.Term)
-				}
+				//if d.IsLeader() {
+				//	log.Errorf("%d failed to find call back for entry %d, term: %d", d.PeerId(), entry.Index, entry.Term)
+				//}
 			} else {
 				//log.Infof("%s send callback %s, resp: %+v", d.Tag, describeProposal(prop), resp)
 				prop.cb.Done(resp)
@@ -686,6 +778,10 @@ func msgIsAdminRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
 	return msg.AdminRequest != nil
 }
 
+func msgIsSplitRegionRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
+	return msg.AdminRequest.Split != nil
+}
+
 func msgIsChangePeerRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
 	return msg.AdminRequest.ChangePeer != nil
 }
@@ -755,6 +851,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		// _ = d.applyConfChangeRaftCommand(pb.Entry{}, confChange, new(engine_util.WriteBatch))
 
 		log.Infof("%s propose a confChange command at %d", d.Tag, lastIndex)
+	} else if msgIsAdminRequest(msg) && msgIsSplitRegionRequest(msg) {
+		//log.Errorf("%s receive split region propose: %+v", d.Tag, msg)
+		if err = d.RaftGroup.Propose(data); err != nil {
+			log.Errorf("%d failed to propose raft command: %+v", d.PeerId(), err)
+			return
+		}
 	} else {
 		if err = d.RaftGroup.Propose(data); err != nil {
 			log.Errorf("%d failed to propose raft command: %+v", d.PeerId(), err)
