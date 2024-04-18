@@ -18,6 +18,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/opt"
+	"sort"
 )
 
 func init() {
@@ -75,8 +76,30 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 	return s.opController.OperatorCount(operator.OpRegion) < cluster.GetRegionScheduleLimit()
 }
 
+func (s *balanceRegionScheduler) generateOperator(smaller, larger *core.StoreInfo, cluster opt.Cluster) *operator.Operator {
+	region := selectOneRegionFromLargestStore(larger, cluster)
+	if region == nil {
+		return nil
+	}
+	return generateOperatorMoveRegionToSmallerStore(smaller, region, cluster)
+}
+
+func generateOperatorMoveRegionToSmallerStore(smaller *core.StoreInfo, region *core.RegionInfo, cluster opt.Cluster) *operator.Operator {
+	return nil
+}
+
+func selectOneRegionFromLargestStore(store *core.StoreInfo, cluster opt.Cluster) *core.RegionInfo {
+	return nil
+}
+
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
-
-	return nil
+	stores := cluster.GetStores()
+	// sort stores by store.regionCount
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].GetRegionSize() < stores[j].GetRegionSize()
+	})
+	minSizeStore := stores[0]
+	maxSizeStore := stores[len(stores)-1]
+	return s.generateOperator(minSizeStore, maxSizeStore, cluster)
 }
