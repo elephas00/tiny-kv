@@ -14,6 +14,7 @@
 package schedulers
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/core"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
@@ -76,30 +77,90 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 	return s.opController.OperatorCount(operator.OpRegion) < cluster.GetRegionScheduleLimit()
 }
 
-func (s *balanceRegionScheduler) generateOperator(smaller, larger *core.StoreInfo, cluster opt.Cluster) *operator.Operator {
-	region := selectOneRegionFromLargestStore(larger, cluster)
-	if region == nil {
-		return nil
+func generateOperatorMoveRegionToSmallerStore(smaller, larger *core.StoreInfo, region *core.RegionInfo, cluster opt.Cluster) *operator.Operator {
+	newPeer, err := cluster.AllocPeer(smaller.GetID())
+	if err != nil {
+		log.Panicf("failed to alloc peer")
 	}
-	return generateOperatorMoveRegionToSmallerStore(smaller, region, cluster)
+	op, err := operator.CreateMovePeerOperator("3c test", cluster, region, operator.OpBalance, larger.GetID(), smaller.GetID(), newPeer.GetId())
+	if err != nil {
+		log.Panicf("failed to alloc peer")
+	}
+	return op
 }
 
-func generateOperatorMoveRegionToSmallerStore(smaller *core.StoreInfo, region *core.RegionInfo, cluster opt.Cluster) *operator.Operator {
-	return nil
-}
+func findRegionMoveOut(storeId uint64, cluster opt.Cluster) *core.RegionInfo {
+	pending := cluster.RandPendingRegion(storeId)
+	if pending != nil {
+		return pending
+	}
 
-func selectOneRegionFromLargestStore(store *core.StoreInfo, cluster opt.Cluster) *core.RegionInfo {
+	follower := cluster.RandFollowerRegion(storeId)
+	if follower != nil {
+		return follower
+	}
+	leader := cluster.RandLeaderRegion(storeId)
+	if leader != nil {
+		return leader
+	}
 	return nil
 }
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
-	// Your Code Here (3C).
 	stores := cluster.GetStores()
-	// sort stores by store.regionCount
+
+	// sort the stores by region size
 	sort.Slice(stores, func(i, j int) bool {
 		return stores[i].GetRegionSize() < stores[j].GetRegionSize()
 	})
-	minSizeStore := stores[0]
-	maxSizeStore := stores[len(stores)-1]
-	return s.generateOperator(minSizeStore, maxSizeStore, cluster)
+
+	sourceStoreIndex, regionMoveOut := findSourceStoreAndRegion(stores, cluster)
+	if regionMoveOut == nil {
+		return nil
+	}
+
+	targetStoreIndex, existMoveInStore := findTargetStore(stores, sourceStoreIndex, regionMoveOut, cluster)
+	if !existMoveInStore {
+		return nil
+	}
+
+	return generateOperatorMoveRegionToSmallerStore(stores[targetStoreIndex], stores[sourceStoreIndex], regionMoveOut, cluster)
+}
+
+func findSourceStoreAndRegion(stores []*core.StoreInfo, cluster opt.Cluster) (int, *core.RegionInfo) {
+	var sourceStoreIndex int
+	var regionMoveOut *core.RegionInfo
+	for i := len(stores) - 1; i >= 1; i-- {
+		region := findRegionMoveOut(stores[i].GetID(), cluster)
+		if region != nil {
+			sourceStoreIndex = i
+			regionMoveOut = region
+			break
+		}
+	}
+	return sourceStoreIndex, regionMoveOut
+}
+
+func findTargetStore(stores []*core.StoreInfo, sourceStoreIndex int, regionMoveOut *core.RegionInfo, cluster opt.Cluster) (int, bool) {
+	var targetStoreIndex int
+	var existMoveInStore bool
+	for i := 0; i < len(stores)-1; i++ {
+		if stores[i].IsOffline() || stores[i].IsUnhealth() || len(regionMoveOut.GetPeers()) < cluster.GetMaxReplicas() {
+			continue
+		}
+		meta := regionMoveOut.GetMeta()
+		valid := true
+		for _, p := range meta.Peers {
+			if p.StoreId == stores[i].GetID() {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			targetStoreIndex = i
+			existMoveInStore = true
+			break
+		}
+	}
+	return targetStoreIndex, existMoveInStore
 }
