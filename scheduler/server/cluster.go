@@ -276,33 +276,6 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 	return nil
 }
 
-func regionInfoIsStale(receivedRegionInfo, currentRegionInfo *core.RegionInfo) bool {
-	if currentRegionInfo == nil {
-		return true
-	}
-	// stale heartbeat
-	if compareRegionEpoch(receivedRegionInfo.GetRegionEpoch(), currentRegionInfo.GetRegionEpoch()) < 0 {
-		return false
-	}
-	// configuration change
-	if compareRegionEpoch(receivedRegionInfo.GetRegionEpoch(), currentRegionInfo.GetRegionEpoch()) > 0 {
-		return true
-	}
-	// leader change
-	if !peerEquals(receivedRegionInfo.GetLeader(), currentRegionInfo.GetLeader()) {
-		return true
-	}
-	// has a pending peer
-	if len(receivedRegionInfo.GetPendingPeers()) != len(currentRegionInfo.GetPendingPeers()) {
-		return true
-	}
-	// approximate size change
-	if receivedRegionInfo.GetApproximateSize() != currentRegionInfo.GetApproximateSize() {
-		return true
-	}
-	return false
-}
-
 func compareRegionEpoch(left, right *metapb.RegionEpoch) int {
 	if left.Version == right.Version {
 		if left.ConfVer < right.ConfVer {
@@ -322,27 +295,22 @@ func compareRegionEpoch(left, right *metapb.RegionEpoch) int {
 	}
 }
 
-func peerEquals(left, right *metapb.Peer) bool {
-	if left.Id != right.Id {
-		return false
-	}
-	if left.StoreId != right.StoreId {
-		return false
-	}
-	return true
-}
-
 // processRegionHeartbeat updates the region information.
-func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
+func (c *RaftCluster) processRegionHeartbeat(receivedRegionInfo *core.RegionInfo) error {
 	// Your Code Here (3C).
-	curRegionInfo := c.core.Regions.GetRegion(region.GetID())
-	if regionInfoIsStale(region, curRegionInfo) {
+	c.Lock()
+	defer c.Unlock()
+	currentRegionInfo := c.core.Regions.GetRegion(receivedRegionInfo.GetID())
+	if receivedRegionInfo == nil {
+		return errors.New("error region info is stale.")
+	}
+	// stale heartbeat
+	if currentRegionInfo != nil && compareRegionEpoch(receivedRegionInfo.GetRegionEpoch(), currentRegionInfo.GetRegionEpoch()) < 0 {
 		return errors.New("error region info is stale.")
 	}
 
-	c.core.PutRegion(region)
-
-	meta := region.GetMeta()
+	c.core.PutRegion(receivedRegionInfo)
+	meta := receivedRegionInfo.GetMeta()
 	for _, p := range meta.GetPeers() {
 		c.updateStoreStatusLocked(p.GetStoreId())
 	}
