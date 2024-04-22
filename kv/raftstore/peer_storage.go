@@ -426,7 +426,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		if err != nil {
 			log.Panicf("%s failed to apply %+v", ps.Tag, err)
 		} else {
-			log.Infof("%s apply result %+v", ps.Tag, result)
+			log.Infof("%s apply result applied:%d, result:%+v", ps.Tag, ps.applyState.AppliedIndex, result)
 		}
 		if ps.raftState.HardState == nil || raft.IsEmptyHardState(*ps.raftState.HardState) {
 			log.Panicf("%s failed to apply snapshot, because hard state is empty.", ps.Tag)

@@ -47,13 +47,15 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 }
 
 func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
-
+	currentRegion := d.Region()
 	raftMsg := rspb.RaftMessage{
 		RegionId:    d.regionId,
 		FromPeer:    d.peer.Meta,
 		ToPeer:      d.getPeerFromCache(msg.To),
 		Message:     &msg,
-		RegionEpoch: d.Region().RegionEpoch,
+		RegionEpoch: currentRegion.GetRegionEpoch(),
+		StartKey:    currentRegion.GetStartKey(),
+		EndKey:      currentRegion.GetEndKey(),
 	}
 	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
 
@@ -531,6 +533,9 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 	if err != nil {
 		log.Panicf("%s failed to apply conf change command, err: %+v", d.Tag, err)
 	}
+	if err := util.CheckRegionEpoch(&confChangeRequest, d.Region(), true); err != nil {
+		return ErrResp(err)
+	}
 
 	if change.ChangeType == pb.ConfChangeType_AddNode {
 		resp = d.applyAddNodeConfChangeRaftCommand(&entry, &change, confChangeRequest.AdminRequest.ChangePeer, kvWB)
@@ -921,8 +926,8 @@ func (d *peerMsgHandler) ScheduleCompactLog(truncatedIndex uint64) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-	log.Debugf("%s handle raft message %s from %d to %d",
-		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
+	log.Debugf("%s handle raft message %s from %d to %d, detail:%+v",
+		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg)
 	if !d.validateRaftMessage(msg) {
 		return nil
 	}

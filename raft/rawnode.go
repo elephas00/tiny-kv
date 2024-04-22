@@ -109,7 +109,7 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 	}
 
 	if rn.Raft.PendingConfIndex > rn.Raft.RaftLog.applied {
-		log.Errorf("%s reject to propose conf change, only one conf change processing at one time, previous %d,", rn.Raft.nodeIdentifier(), rn.Raft.PendingConfIndex)
+		log.Errorf("%s reject to propose conf change, only one conf change processing at one time, previous %d, progress:%+v", rn.Raft.nodeIdentifier(), rn.Raft.PendingConfIndex, rn.GetProgress())
 		return ErrProposalDropped
 	}
 

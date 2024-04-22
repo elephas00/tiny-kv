@@ -106,7 +106,8 @@ func (c *Config) validate() error {
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
-	Match, Next uint64
+	Match, Next  uint64
+	RecentActive bool
 }
 
 type Raft struct {
@@ -255,20 +256,20 @@ func (r *Raft) sendSnapshot(to uint64) {
 func (r *Raft) sendAppend(to uint64) bool {
 	// TODO: Your Code Here (2A).
 
-	progress := r.Prs[to]
-	if progress.Next <= r.RaftLog.getOffset() {
+	prs := r.Prs[to]
+	if prs.Next <= r.RaftLog.getOffset() {
 		r.sendSnapshot(to)
 		return false
 	}
 
 	var prevLogIndex, prevLogTerm uint64
 
-	if progress.Match <= r.RaftLog.getOffset() {
+	if prs.Match <= r.RaftLog.getOffset() {
 		compactedLog := r.RaftLog.entries[0]
 		prevLogTerm = compactedLog.Term
 		prevLogIndex = compactedLog.Index
 	} else {
-		prevLogIndex = progress.Match
+		prevLogIndex = prs.Match
 		term, err := r.RaftLog.Term(prevLogIndex)
 		if err != nil {
 			message := "%s failed to access log index %d when send append entries, error %+v"
@@ -379,8 +380,26 @@ func (r *Raft) tickCandidate() {
 
 func (r *Raft) tickLeader() {
 	r.heartbeatElapsed++
+	r.electionElapsed++
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
 		r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
+	}
+	if r.electionElapsed >= r.electionTimeout {
+		count := 0
+		for _, prs := range r.Prs {
+			if prs.RecentActive {
+				count++
+			}
+		}
+		if count < r.minimumQuorum() {
+			r.becomeFollower(r.Term, None)
+		}
+	} else {
+		r.electionElapsed = -r.electionTimeout
+		for _, prs := range r.Prs {
+			prs.RecentActive = false
+		}
+		r.Prs[r.id].RecentActive = true
 	}
 }
 
@@ -653,13 +672,18 @@ func (r *Raft) updateCommit() {
 	}
 }
 
-func (r *Raft) updatePrs(id, match uint64) {
+func (r *Raft) updatePrs(id, match, next uint64) {
 	//log.Infof("node %d, match: %d, next: %d", id, match, match+1)
 	r.Prs[id].Match = match
-	r.Prs[id].Next = match + 1
+	r.Prs[id].Next = next
 }
 
 func (r *Raft) handleLeaderStep(m pb.Message) error {
+	from := m.From
+	prs := r.Prs[from]
+	if prs != nil {
+		prs.RecentActive = true
+	}
 	switch m.MsgType {
 	case pb.MessageType_MsgBeat:
 		r.heartbeatElapsed = 0
@@ -685,7 +709,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			address.Index = r.RaftLog.LastIndex() + 1
 			address.Term = r.Term
 			r.RaftLog.entries = append(r.RaftLog.entries, *address)
-			r.updatePrs(r.id, address.Index)
+			r.updatePrs(r.id, address.Index, address.Index+1)
 			if r.minimumQuorum() == 1 {
 				r.RaftLog.committed = address.Index
 			}
@@ -699,13 +723,14 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 
 	case pb.MessageType_MsgAppendResponse:
 		if m.Reject {
-			match := r.Prs[m.From].Match
-			if match > 0 {
-				r.updatePrs(m.From, match-1)
+			prs := r.Prs[m.From]
+			if prs.Next > 0 {
+				r.updatePrs(m.From, prs.Match, min(m.Index, prs.Next-1))
 			}
 		} else {
 			match := m.Index
-			r.updatePrs(m.From, match)
+			prs := r.Prs[m.From]
+			r.updatePrs(m.From, max(prs.Match, match), max(prs.Next, match+1))
 			// log.Infof("%s receive append response from %d, match index:%d", r.nodeIdentifier(), m.From, match)
 			r.updateCommit()
 			if r.transfereeIsExist(m.From) && r.leadTransferee == m.From && r.transfereeIsMostUpdate(m.From) {
@@ -771,13 +796,24 @@ func (r *Raft) checkMessageNotValid(m *pb.Message) bool {
 		if firstEntry.Index < offset {
 			// do nothing
 		} else if firstEntry.Index == offset {
-			m.Index = firstEntry.Term
+			m.Index = firstEntry.Index
 			m.LogTerm = firstEntry.Term
 			return r.checkMessageNotValid(m)
 		}
 	}
 	return true
 
+}
+
+func (r *Raft) findMostApproximateIndex(index uint64, term uint64) uint64 {
+	allEntries := r.RaftLog.allEntries()
+	for i := len(allEntries) - 1; i >= 0; i-- {
+		entry := allEntries[i]
+		if entry.Index < index && entry.Term < term {
+			return entry.Index
+		}
+	}
+	return r.RaftLog.getOffset()
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -792,7 +828,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.becomeFollower(r.Term, m.From)
 	// check whether the current follower contains entry that match previous log and previous term in message.
 	if r.checkMessageNotValid(&m) {
-		r.sendAppendResponse(m.From, None, true)
+		mostApproximateIndex := r.findMostApproximateIndex(m.Index, m.LogTerm)
+		r.sendAppendResponse(m.From, mostApproximateIndex, true)
 		return
 	}
 
@@ -848,9 +885,13 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 func (r *Raft) initPeers(peers []uint64) {
 	r.Prs = make(map[uint64]*Progress, len(peers))
-	//r.Prs[r.id] = &Progress{Match: 0, Next: 1}
+
 	for _, peer := range peers {
-		r.Prs[peer] = &Progress{Match: r.RaftLog.getOffset(), Next: r.RaftLog.getOffset() + 1}
+		r.Prs[peer] = &Progress{
+			Match:        r.RaftLog.getOffset(),
+			Next:         r.RaftLog.LastIndex() + 1,
+			RecentActive: false,
+		}
 	}
 }
 
@@ -919,7 +960,11 @@ func (r *Raft) compressRaftLog(index, term uint64) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	r.Prs[id] = &Progress{0, 1}
+	r.Prs[id] = &Progress{
+		Match:        0,
+		Next:         1,
+		RecentActive: false,
+	}
 }
 
 // removeNode remove a node from raft group
