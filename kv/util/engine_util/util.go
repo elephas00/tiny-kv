@@ -108,3 +108,16 @@ func ExceedEndKey(current, endKey []byte) bool {
 	}
 	return bytes.Compare(current, endKey) >= 0
 }
+
+func WithinRange(current, startKey, endKey []byte) bool {
+	if len(startKey) == 0 && len(endKey) == 0 {
+		return true
+	}
+	if len(startKey) == 0 {
+		return bytes.Compare(current, endKey) < 0
+	}
+	if len(endKey) == 0 {
+		return bytes.Compare(current, startKey) >= 0
+	}
+	return bytes.Compare(current, startKey) >= 0 && bytes.Compare(current, endKey) < 0
+}

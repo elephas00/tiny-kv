@@ -106,33 +106,14 @@ func (d *peerMsgHandler) executeSnapRequest(getSnap *raft_cmdpb.SnapRequest) (*r
 
 func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cmdpb.RaftCmdRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 	var responses []*raft_cmdpb.Response
-	// check key in current region
+
 	curRegion := d.Region()
-	if err := util.CheckRegionEpoch(raftCmd, curRegion, true); err != nil {
-		regions := []*metapb.Region{}
-		d.ctx.storeMeta.Lock()
-		for _, r := range d.ctx.storeMeta.regions {
-			regions = append(regions, r)
-		}
-		d.ctx.storeMeta.Unlock()
-		return &raft_cmdpb.RaftCmdResponse{
-			Header: &raft_cmdpb.RaftResponseHeader{
-				Error: &errorpb.Error{
-					Message: "",
-					EpochNotMatch: &errorpb.EpochNotMatch{
-						CurrentRegions: regions,
-					},
-				},
-			},
-		}
-	}
 
 	for _, req := range raftCmd.Requests {
 		switch req.CmdType {
 		case raft_cmdpb.CmdType_Get:
 			get := req.GetGet()
-			if engine_util.ExceedEndKey(get.GetKey(), curRegion.GetEndKey()) {
-				//||				!engine_util.ExceedEndKey(get.GetKey(), curRegion.GetStartKey())
+			if !engine_util.WithinRange(get.GetKey(), curRegion.GetStartKey(), curRegion.GetEndKey()) {
 				err := &errorpb.KeyNotInRegion{
 					Key:      get.GetKey(),
 					RegionId: curRegion.GetId(),
@@ -151,8 +132,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 			}
 		case raft_cmdpb.CmdType_Put:
 			put := req.GetPut()
-			if engine_util.ExceedEndKey(put.GetKey(), curRegion.GetEndKey()) {
-				//|| !engine_util.ExceedEndKey(put.GetKey(), curRegion.GetStartKey())
+			if !engine_util.WithinRange(put.GetKey(), curRegion.GetStartKey(), curRegion.GetEndKey()) {
 				err := &errorpb.KeyNotInRegion{
 					Key:      put.GetKey(),
 					RegionId: curRegion.GetId(),
@@ -171,8 +151,7 @@ func (d *peerMsgHandler) applyNormalRaftCommand(entry pb.Entry, raftCmd *raft_cm
 			}
 		case raft_cmdpb.CmdType_Delete:
 			del := req.GetDelete()
-			if engine_util.ExceedEndKey(del.GetKey(), curRegion.GetEndKey()) {
-				//||!engine_util.ExceedEndKey(del.GetKey(), curRegion.GetStartKey())
+			if !engine_util.WithinRange(del.GetKey(), curRegion.GetStartKey(), curRegion.GetEndKey()) {
 				err := &errorpb.KeyNotInRegion{
 					Key:      del.GetKey(),
 					RegionId: curRegion.GetId(),
