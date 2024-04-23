@@ -58,7 +58,6 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		EndKey:      currentRegion.GetEndKey(),
 	}
 	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
-
 	if msg.MsgType == pb.MessageType_MsgHeartbeat {
 		//log.Infof("%s send heart to (id %d, store %d) ", d.Tag, msg.To, d.peerCache[msg.To].StoreId)
 	}
@@ -68,15 +67,22 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 
 func (d *peerMsgHandler) findProposal(entry pb.Entry, delete bool) (*proposal, bool) {
 	// TODO: this find function could with time complexity o(1)
-	for i, prop := range d.proposals {
-		if prop.term == entry.Term && prop.index == entry.Index {
-			// Found the proposal, delete all proposals before this one
-			if delete {
-				d.proposals = d.proposals[i+1:]
+	if delete {
+		for len(d.proposals) > 0 && d.proposals[0].index <= entry.Index {
+			prop := d.proposals[0]
+			d.proposals = d.proposals[1:]
+			if prop.term == entry.Term && prop.index == entry.Index {
+				return prop, false
 			}
-			return prop, false
+		}
+	} else {
+		for _, prop := range d.proposals {
+			if prop.term == entry.Term && prop.index == entry.Index {
+				return prop, false
+			}
 		}
 	}
+
 	return nil, true
 }
 
@@ -615,10 +621,7 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 			if d.stopped {
 				return nil
 			}
-			err = kvWB.WriteToDB(d.peerStorage.Engines.Kv)
-			if err != nil {
-				log.Errorf("failed to write kv, err: %+v", err)
-			}
+			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
 		} else {
@@ -823,6 +826,31 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			ChangeType: msg.AdminRequest.ChangePeer.ChangeType,
 			NodeId:     msg.AdminRequest.ChangePeer.Peer.Id,
 			Context:    context,
+		}
+		if confChange.ChangeType == pb.ConfChangeType_RemoveNode {
+			if confChange.NodeId == d.PeerId() {
+				// sending transfer leader to other nodes
+				progressList := d.RaftGroup.GetProgress()
+				if len(progressList) > 1 {
+					for id, prs := range progressList {
+						if prs.RecentActive && id != d.PeerId() {
+							d.RaftGroup.TransferLeader(id)
+							log.Errorf("%s failed to propose remove itself command, transfer leader to %d, progress: %+v", d.Tag, id, progressList)
+							// TODO: cb.Done(error not leader?)
+							return
+						}
+					}
+					for id := range progressList {
+						if id != d.PeerId() {
+							d.RaftGroup.TransferLeader(id)
+							log.Errorf("%s failed to propose remove itself command, transfer leader to %d, progress: %+v", d.Tag, id, progressList)
+							return
+						}
+					}
+					log.Errorf("%s failed to propose remove itself command, it find no recently active node. %+v", d.Tag, progressList)
+					return
+				}
+			}
 		}
 		if err = d.RaftGroup.ProposeConfChange(confChange); err != nil {
 			log.Errorf("failed to propose conf change raft cammand: %+v", err)

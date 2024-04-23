@@ -467,8 +467,11 @@ func (r *Raft) becomeLeader() {
 	// initialize leader data structure.
 	for id := range r.Prs {
 		progress := r.Prs[id]
-		progress.Next = r.RaftLog.LastIndex() + 1
-		progress.Match = r.RaftLog.getOffset()
+		if progress.Match != 0 {
+			// to avoid new leader missing newly added node.
+			progress.Next = r.RaftLog.LastIndex() + 1
+			progress.Match = r.RaftLog.getOffset()
+		}
 	}
 	// propose noop entry.
 	r.proposeNoopEntry()
