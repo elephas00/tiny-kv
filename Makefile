@@ -82,7 +82,11 @@ project2b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartition2B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestPersistPartitionUnreliable2B$ || true
 	$(TEST_CLEAN)
-
+TestManyPartitionsManyClients2B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsOneClient2B$ || true
+	$(GOTEST) ./kv/test_raftstore -run ^TestManyPartitionsManyClients2B$ || true
+	$(TEST_CLEAN)
 project2c:
 	$(TEST_CLEAN)
 	$(GOTEST) ./raft -run 2C || true
@@ -118,7 +122,26 @@ project3b:
 	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecover3B$ || true
 	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
 	$(TEST_CLEAN)
-
+TestSplitConfChangeSnapshotUnreliableRecoverConcurrentPartition3B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
+	$(TEST_CLEAN)
+TestConfChangeSnapshotUnreliableRecoverConcurrentPartition3B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ || true
+	$(TEST_CLEAN)
+TestConfChangeSnapshotUnreliableRecover3B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeSnapshotUnreliableRecover3B$ || true
+	$(TEST_CLEAN)
+TestConfChangeRecover3B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestConfChangeRecover3B$ || true
+	$(TEST_CLEAN)
+TestSplitConfChangeSnapshotUnreliableRecover3B:
+	$(TEST_CLEAN)
+	$(GOTEST) ./kv/test_raftstore -run ^TestSplitConfChangeSnapshotUnreliableRecover3B$ || true
+	$(TEST_CLEAN)
 project3c:
 	$(GOTEST) ./scheduler/server ./scheduler/server/schedulers -check.f="3C"
 
