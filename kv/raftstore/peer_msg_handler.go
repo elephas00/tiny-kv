@@ -500,6 +500,42 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	if change.NodeId != d.PeerId() {
 		return d.applyRemoveOtherNodeConfChange(entry, change, kvWB)
 	}
+	d.peerStorage.region.RegionEpoch.ConfVer++
+	var newPeers []*metapb.Peer
+	for _, peerNode := range d.peerStorage.region.Peers {
+		if peerNode.Id != change.NodeId {
+			newPeers = append(newPeers, peerNode)
+		}
+	}
+	d.peerStorage.region.Peers = newPeers
+	clone := cloneRegion(d.Region())
+
+	d.ctx.storeMeta.RWMutex.Lock()
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+	d.ctx.storeMeta.regions[d.regionId] = clone
+	d.ctx.storeMeta.RWMutex.Unlock()
+
+	regionLocalState := new(rspb.RegionLocalState)
+	isTombstone := true
+	for _, newPeer := range newPeers {
+		if newPeer.StoreId == d.storeID() {
+			isTombstone = false
+		}
+	}
+	if isTombstone {
+		regionLocalState.State = rspb.PeerState_Tombstone
+	} else {
+		regionLocalState.State = rspb.PeerState_Normal
+	}
+	regionLocalState.Region = d.Region()
+	err := kvWB.SetMeta(meta.RegionStateKey(d.regionId), regionLocalState)
+	if err != nil {
+		log.Errorf("failed to set region local state, err: %+v", err)
+	}
+
+	// destroy current node if it was removed.
+	d.peer.removePeerCache(change.NodeId)
+	kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
 	d.peer.stopped = true
 	kvWB.Reset()
 	d.destroyPeer()
@@ -678,11 +714,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if err != nil {
 		log.Errorf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
 	}
-	if len(rd.Entries) > 0 {
-		lastLogIndex := len(rd.Entries) - 1
-		d.peerStorage.raftState.LastIndex = rd.Entries[lastLogIndex].Index
-		d.peerStorage.raftState.LastTerm = rd.Entries[lastLogIndex].Term
-	}
 
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
@@ -690,13 +721,21 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if rd.SoftState != nil && d.IsLeader() {
 		d.onSchedulerHeartbeatTick()
 	}
+	if rd.Snapshot.Metadata != nil {
+		meta := rd.Snapshot.Metadata
+		d.peer.LastCompactedIdx = meta.Index
+		d.peer.peerStorage.applyState.AppliedIndex = meta.Index
+		d.peer.peerStorage.raftState.HardState.Commit = meta.Index
+	}
 
 	if d.peerStorage.raftState.HardState.Commit <= rd.Commit {
 		d.peerStorage.raftState.HardState.Commit = rd.Commit
-	} else {
-		//log.Errorf(" commit rollback, hard state: %+v", d.peerStorage.raftState.HardState)
 	}
-
+	if len(rd.Entries) > 0 {
+		lastLogIndex := len(rd.Entries) - 1
+		d.peerStorage.raftState.LastIndex = rd.Entries[lastLogIndex].Index
+		d.peerStorage.raftState.LastTerm = rd.Entries[lastLogIndex].Term
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

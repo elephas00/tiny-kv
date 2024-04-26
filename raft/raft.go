@@ -197,7 +197,7 @@ func (r *Raft) initHardSate(c *Config) {
 	hardState, _, _ := c.Storage.InitialState()
 	r.Term = hardState.Term
 	r.Vote = hardState.Vote
-	r.RaftLog.committed = hardState.Commit
+	r.RaftLog.commitTo(hardState.Commit)
 }
 
 func (r *Raft) initPeersByConfig(c *Config) {
@@ -664,7 +664,7 @@ func (r *Raft) updateCommit() {
 
 		// a leader could commit log in its term.
 		if cnt >= r.minimumQuorum() && term == r.Term {
-			r.RaftLog.committed = commit
+			r.RaftLog.commitTo(commit)
 			//log.Infof("%s commit %d, %d reach consensus", r.nodeIdentifier(), commit, cnt)
 			break
 		}
@@ -714,7 +714,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 			r.RaftLog.entries = append(r.RaftLog.entries, *address)
 			r.updatePrs(r.id, address.Index, address.Index+1)
 			if r.minimumQuorum() == 1 {
-				r.RaftLog.committed = address.Index
+				r.RaftLog.commitTo(address.Index)
 			}
 		}
 
@@ -845,8 +845,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 		}
 	}
-	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(m.Index+uint64(len(m.Entries)), m.Commit)
+	mayCommit := min(m.Index+uint64(len(m.Entries)), m.Commit)
+	if mayCommit > r.RaftLog.committed {
+		r.RaftLog.commitTo(mayCommit)
 	}
 
 	r.sendAppendResponse(m.From, m.Index+uint64(len(m.Entries)), false)
@@ -880,7 +881,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.becomeFollower(m.GetTerm(), m.GetFrom())
 	// accept.
 	if m.Commit > r.RaftLog.committed {
-		r.RaftLog.committed = min(r.RaftLog.LastIndex(), m.Commit)
+		r.RaftLog.commitTo(min(r.RaftLog.LastIndex(), m.Commit))
 	}
 	r.sendHeartbeatResponse(m.From, false)
 
@@ -898,66 +899,74 @@ func (r *Raft) initPeers(peers []uint64) {
 	}
 }
 
+func (r *Raft) shouldIgnoreSnapshotAndReturnAccept(meta *pb.SnapshotMetadata) bool {
+	// duplicate snapshot.
+	if r.RaftLog.pendingSnapshot != nil &&
+		r.RaftLog.pendingSnapshot.Metadata.Index == meta.Index &&
+		r.RaftLog.pendingSnapshot.Metadata.Term == meta.Term {
+		return true
+	}
+
+	// no need to handle this snapshot, this node has all information that included in the snapshot.
+	lastLogIndex := r.RaftLog.LastIndex()
+	dummyLogIndex := r.RaftLog.getOffset()
+	if meta.Index <= dummyLogIndex {
+		return true
+	}
+	if meta.Index > dummyLogIndex && meta.Index <= lastLogIndex {
+		term, err := r.RaftLog.Term(meta.Index)
+		if err != nil {
+			log.Panicf("%s failed to handle snapshot: %+v", r.nodeIdentifier(), err)
+		}
+		if term == meta.Term {
+			return true
+		}
+	}
+	return false
+}
+
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
 
+	// empty snapshot.
 	if m.Snapshot.Metadata == nil {
 		// ignore it.
 		return
 	}
-
+	// stale snapshot.
 	if r.Term > m.Term {
 		return
 	}
-	if m.Snapshot.Metadata == nil {
-		return
-	}
-	if r.RaftLog.pendingSnapshot != nil && r.RaftLog.pendingSnapshot.Metadata.Index == m.Snapshot.Metadata.Index && r.RaftLog.pendingSnapshot.Metadata.Term == m.Snapshot.Metadata.Term {
-		log.Infof("%s reject to handle snapshot: %+v", r.nodeIdentifier(), m)
+
+	if r.shouldIgnoreSnapshotAndReturnAccept(m.Snapshot.Metadata) {
+		log.Infof("%s, offset %d, last %d, reject to handle snapshot: %+v", r.nodeIdentifier(), r.RaftLog.getOffset(), r.RaftLog.LastIndex(), m)
 		r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
 		return
 	}
+
 	log.Infof("%s triggered handle snapshot: %+v", r.nodeIdentifier(), m)
 
-	if r.RaftLog.LastIndex() >= m.Snapshot.Metadata.Index {
-		term, err := r.RaftLog.Term(r.RaftLog.LastIndex())
-		if err != nil {
-			log.Errorf("failed to get last index")
-		} else {
-			if term >= m.Snapshot.Metadata.Term {
-				r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
-				return
-			}
-		}
-
-	}
+	// handle the snapshot.
 	r.becomeFollower(r.Term, m.From)
-	//
-	//if m.Index < r.RaftLog.entries[0].Index || m.Index > r.RaftLog.LastIndex() {
-	//	message := "warning: %s, trying to access index: %d, lastIncludedIndex: %d, commit: %d"
-	//	log.Errorf(message, r.nodeIdentifier(), m.Index, r.RaftLog.entries[0].Index, r.RaftLog.committed)
-	//	return
-	//}
-
-	r.compressRaftLog(m.Snapshot.Metadata.Index, m.Snapshot.Metadata.Term)
-
-	r.initPeers(m.Snapshot.Metadata.ConfState.Nodes)
 	r.RaftLog.pendingSnapshot = m.Snapshot
+	meta := m.Snapshot.Metadata
+	r.RaftLog.commitTo(meta.Index)
+	r.RaftLog.stableTo(meta.Index)
+	r.RaftLog.applyTo(meta.Index)
+	r.RaftLog.entries = []pb.Entry{
+		{
+			EntryType: pb.EntryType_EntryNormal,
+			Index:     meta.Index,
+			Term:      meta.Term,
+		},
+	}
+	r.initPeers(meta.ConfState.Nodes)
 	r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
 }
 
 func (r *Raft) compressRaftLog(index, term uint64) {
-	r.RaftLog.entries = []pb.Entry{
-		{
-			EntryType: pb.EntryType_EntryNormal,
-			Index:     index,
-			Term:      term,
-		},
-	}
-	r.RaftLog.stableTo(index)
-	r.RaftLog.applyTo(index)
-	r.RaftLog.commitTo(index)
+
 }
 
 // addNode add a new node to raft group

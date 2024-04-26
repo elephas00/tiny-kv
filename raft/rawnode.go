@@ -224,16 +224,21 @@ func (rn *RawNode) Advance(rd Ready) {
 	// TODO: Your Code Here (2A).
 	//log.Infof("node %+v, commit:", rn.Raft.nodeIdentifier())
 	raft := rn.Raft
+	// apply snapshot.
+	if rd.Snapshot.Metadata != nil {
+		return
+	}
 	if size := len(rd.Entries); size > 0 {
 		raft.RaftLog.stabled = rd.Entries[size-1].Index
 	}
 	if size := len(rd.CommittedEntries); size > 0 {
-		raft.RaftLog.applied = rd.CommittedEntries[size-1].Index
+		raft.RaftLog.applyTo(rd.CommittedEntries[size-1].Index)
 	}
 	if size := len(rd.Messages); size > 0 {
 		// clear messages in ready.
 		raft.msgs = make([]pb.Message, 0)
 	}
+
 }
 
 // GetProgress return the Progress of this node and its peers, if this

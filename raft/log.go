@@ -212,9 +212,15 @@ func (l *RaftLog) stableTo(index uint64) {
 }
 
 func (l *RaftLog) applyTo(index uint64) {
+	if index < l.applied {
+		log.Panicf("failed to apply to index %d, current %d", index, l.applied)
+	}
 	l.applied = index
 }
 
 func (l *RaftLog) commitTo(index uint64) {
+	if index < l.committed {
+		log.Panicf("failed to commit to index %d, current %d", index, l.applied)
+	}
 	l.committed = index
 }
