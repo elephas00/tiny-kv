@@ -702,11 +702,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
 		d.ctx.storeMeta.RWMutex.Unlock()
 		d.LastCompactedIdx = d.peerStorage.truncatedIndex()
-		// 3. send message to peers.
-		for _, msg := range rd.Messages {
-			_ = d.sendRaftMessage(msg)
-		}
-		return
 	}
 
 	// 3. send message to peers.
@@ -714,10 +709,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		_ = d.sendRaftMessage(msg)
 	}
 
-	// 4. apply committed entries exec write cmd and get cmd.
-	err = d.applyRaftCmdToStateMachine(rd.CommittedEntries)
-	if err != nil {
-		log.Errorf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
+	// if apply snapshot happens, not apply raft command to state machine.
+	if state == nil {
+		// 4. apply committed entries exec write cmd and get cmd.
+		err = d.applyRaftCmdToStateMachine(rd.CommittedEntries)
+		if err != nil {
+			log.Panicf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
+		}
 	}
 
 	// 5. modify in memory data, advance.

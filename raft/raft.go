@@ -236,11 +236,10 @@ func (r *Raft) sendSnapshot(to uint64) {
 
 	snapshot, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		//log.Errorf("%s send stale snapshot to %d: %+v", r.nodeIdentifier(), to, err)
+		log.Errorf("%s send snapshot to %d fail, err: %+v", r.nodeIdentifier(), to, err)
 		return
-	} else {
-		//log.Infof("%s send snapshot to %d, snap: %+v", r.nodeIdentifier(), to, *snapshot.Metadata)
 	}
+	log.Infof("%s send snapshot to peer %d", r.nodeIdentifier(), to)
 	snapshotMsg := pb.Message{
 		From:     r.id,
 		To:       to,
@@ -780,29 +779,27 @@ func (r *Raft) sendAppendResponse(to, index uint64, reject bool) {
 }
 
 func (r *Raft) checkMessageNotValid(m *pb.Message) bool {
+	offset := r.RaftLog.getOffset()
+	if len(m.Entries) > 0 {
+		firstEntry := m.Entries[0]
+		if firstEntry.Index < offset {
+			m.Entries = m.Entries[1:]
+			m.Index = firstEntry.Index
+			m.LogTerm = firstEntry.Term
+			return r.checkMessageNotValid(m)
+		}
+	}
+
 	lastLogIndex := r.RaftLog.LastIndex()
 	if lastLogIndex < m.Index {
 		return true
 	}
-	offset := r.RaftLog.getOffset()
 	if m.Index >= offset {
 		term, err := r.RaftLog.Term(m.Index)
 		if err != nil {
 			return false
 		}
 		return term != m.LogTerm
-	}
-	// this progress could with time complexity o(logn)
-	for len(m.Entries) > 0 {
-		firstEntry := m.Entries[0]
-		m.Entries = m.Entries[1:]
-		if firstEntry.Index < offset {
-			// do nothing
-		} else if firstEntry.Index == offset {
-			m.Index = firstEntry.Index
-			m.LogTerm = firstEntry.Term
-			return r.checkMessageNotValid(m)
-		}
 	}
 	return true
 
