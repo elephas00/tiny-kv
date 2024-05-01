@@ -658,9 +658,10 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 				return nil
 			}
 			kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
-
+			//log.Errorf("%d: commited entries: %+v", d.PeerId(), committedEnts)
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
 		} else {
+			//log.Errorf("commited entries: %+v", committedEnts)
 			log.Panicf("%d, apply index:%d failed, apply index:%d, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		}
 	}
@@ -692,16 +693,20 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 2. persist entries, call SaveReadyState
 	state, err := d.peerStorage.SaveReadyState(&rd)
 	if err != nil {
-		log.Errorf("faild to save ready state %+v, err: %+v", rd, err)
-	} else {
-		if state != nil {
-			clone := cloneRegion(state.Region)
-			d.ctx.storeMeta.RWMutex.Lock()
-			d.ctx.storeMeta.regions[d.regionId] = clone
-			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
-			d.ctx.storeMeta.RWMutex.Unlock()
-			d.LastCompactedIdx = d.peerStorage.truncatedIndex()
+		log.Panicf("faild to save ready state %+v, err: %+v", rd, err)
+	}
+	if state != nil {
+		clone := cloneRegion(state.Region)
+		d.ctx.storeMeta.RWMutex.Lock()
+		d.ctx.storeMeta.regions[d.regionId] = clone
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: clone})
+		d.ctx.storeMeta.RWMutex.Unlock()
+		d.LastCompactedIdx = d.peerStorage.truncatedIndex()
+		// 3. send message to peers.
+		for _, msg := range rd.Messages {
+			_ = d.sendRaftMessage(msg)
 		}
+		return
 	}
 
 	// 3. send message to peers.
@@ -721,21 +726,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if rd.SoftState != nil && d.IsLeader() {
 		d.onSchedulerHeartbeatTick()
 	}
-	if rd.Snapshot.Metadata != nil {
-		meta := rd.Snapshot.Metadata
-		d.peer.LastCompactedIdx = meta.Index
-		d.peer.peerStorage.applyState.AppliedIndex = meta.Index
-		d.peer.peerStorage.raftState.HardState.Commit = meta.Index
-	}
 
-	if d.peerStorage.raftState.HardState.Commit <= rd.Commit {
-		d.peerStorage.raftState.HardState.Commit = rd.Commit
-	}
-	if len(rd.Entries) > 0 {
-		lastLogIndex := len(rd.Entries) - 1
-		d.peerStorage.raftState.LastIndex = rd.Entries[lastLogIndex].Index
-		d.peerStorage.raftState.LastTerm = rd.Entries[lastLogIndex].Term
-	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

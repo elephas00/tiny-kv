@@ -196,10 +196,8 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if rn.Raft.RaftLog.pendingSnapshot != nil {
 		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
-		if ready.Snapshot.Data == nil {
-			log.Infof("snap data is nil")
-		}
 	}
+
 	softState := &SoftState{RaftState: rn.Raft.State, Lead: rn.Raft.Lead}
 	if rn.softStateChanged(softState) {
 		ready.SoftState = softState
@@ -225,9 +223,6 @@ func (rn *RawNode) Advance(rd Ready) {
 	//log.Infof("node %+v, commit:", rn.Raft.nodeIdentifier())
 	raft := rn.Raft
 	// apply snapshot.
-	if rd.Snapshot.Metadata != nil {
-		return
-	}
 	if size := len(rd.Entries); size > 0 {
 		raft.RaftLog.stabled = rd.Entries[size-1].Index
 	}

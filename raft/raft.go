@@ -901,27 +901,30 @@ func (r *Raft) initPeers(peers []uint64) {
 
 func (r *Raft) shouldIgnoreSnapshotAndReturnAccept(meta *pb.SnapshotMetadata) bool {
 	// duplicate snapshot.
-	if r.RaftLog.pendingSnapshot != nil &&
-		r.RaftLog.pendingSnapshot.Metadata.Index == meta.Index &&
-		r.RaftLog.pendingSnapshot.Metadata.Term == meta.Term {
+	if r.RaftLog.pendingSnapshot != nil {
+		metadata := r.RaftLog.pendingSnapshot.Metadata
+		if metadata.Index == meta.Index && metadata.Term == meta.Term {
+			return true
+		}
+	}
+
+	if r.RaftLog.pendingSnapshot != nil {
+		metadata := r.RaftLog.pendingSnapshot.Metadata
+		if metadata.Index > meta.Index {
+			return true
+		}
+	}
+
+	if meta.Index < r.RaftLog.committed {
 		return true
 	}
 
 	// no need to handle this snapshot, this node has all information that included in the snapshot.
-	lastLogIndex := r.RaftLog.LastIndex()
 	dummyLogIndex := r.RaftLog.getOffset()
 	if meta.Index <= dummyLogIndex {
 		return true
 	}
-	if meta.Index > dummyLogIndex && meta.Index <= lastLogIndex {
-		term, err := r.RaftLog.Term(meta.Index)
-		if err != nil {
-			log.Panicf("%s failed to handle snapshot: %+v", r.nodeIdentifier(), err)
-		}
-		if term == meta.Term {
-			return true
-		}
-	}
+
 	return false
 }
 

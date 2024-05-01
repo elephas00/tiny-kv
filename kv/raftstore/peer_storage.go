@@ -372,7 +372,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}); err != nil {
 		return nil, err
 	}
-
+	kvWB.MustWriteToDB(ps.Engines.Kv)
+	raftWB.MustWriteToDB(ps.Engines.Raft)
 	// in-memory state update
 	// RaftLocalState
 	ps.raftState.LastIndex = snapshot.Metadata.Index
@@ -404,9 +405,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	success := <-ch
 	ps.snapState.StateType = snap.SnapState_Relax
 	if success {
-		kvWB.MustWriteToDB(ps.Engines.Kv)
-		raftWB.MustWriteToDB(ps.Engines.Raft)
-
 		raftState, _ := meta.InitRaftLocalState(ps.Engines.Raft, ps.region)
 		if raftState.HardState == nil || raft.IsEmptyHardState(*raftState.HardState) {
 			log.Panicf("%s failed to apply snapshot, because hard state is empty.", ps.Tag)
@@ -424,7 +422,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Your Code Here (2B/2C).
 
 	// process snapshot.
-	if ready.Snapshot.Metadata != nil && ready.Snapshot.Metadata.Index > ps.raftState.LastIndex {
+	if ready.Snapshot.Metadata != nil && ready.Snapshot.Metadata.Index > ps.applyState.TruncatedState.Index {
 		log.Infof("ps %s, result state: %+v", ps.Tag, ps.snapState.StateType)
 		raftWB := new(engine_util.WriteBatch)
 		kvWB := new(engine_util.WriteBatch)
@@ -450,35 +448,29 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	}
 
 	// persist raft state.
-	raftState := new(rspb.RaftLocalState)
 
 	if len(ready.Entries) > 0 {
 		lastLogIndex := len(ready.Entries) - 1
-		raftState.LastIndex = ready.Entries[lastLogIndex].Index
-		raftState.LastTerm = ready.Entries[lastLogIndex].Term
-	} else {
-		raftState.LastIndex = ps.raftState.LastIndex
-		raftState.LastTerm = ps.raftState.LastTerm
+		ps.raftState.LastIndex = ready.Entries[lastLogIndex].Index
+		ps.raftState.LastTerm = ready.Entries[lastLogIndex].Term
 	}
 
 	if !raft.IsEmptyHardState(ready.HardState) {
-		raftState.HardState = new(eraftpb.HardState)
-		raftState.HardState.Commit = ready.HardState.Commit
-		raftState.HardState.Term = ready.HardState.Term
-		raftState.HardState.Vote = ready.HardState.Vote
-	} else {
-		raftState.HardState = ps.raftState.HardState
+		ps.raftState.HardState.Commit = ready.HardState.Commit
+		ps.raftState.HardState.Term = ready.HardState.Term
+		ps.raftState.HardState.Vote = ready.HardState.Vote
 	}
 
-	err = raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), raftState)
+	if ps.raftState.HardState.Commit <= ready.Commit {
+		ps.raftState.HardState.Commit = ready.Commit
+	}
+
+	err = raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 	if err != nil {
 		return nil, err
 	}
 	err = raftWB.WriteToDB(ps.Engines.Raft)
-	if err != nil {
-		return nil, err
-	}
-	return nil, nil
+	return nil, err
 }
 
 func (ps *PeerStorage) ClearData() {
