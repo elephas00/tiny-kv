@@ -661,8 +661,9 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 			//log.Errorf("%d: commited entries: %+v", d.PeerId(), committedEnts)
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
 		} else {
-			//log.Errorf("commited entries: %+v", committedEnts)
-			log.Panicf("%d, apply index:%d failed, apply index:%d, commit command index: %d, term: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
+			log.Errorf("commited entries: %+v", committedEnts)
+			log.Panicf("%s apply index now %d , entry(index: %d, term %d) applied failed ",
+				d.Tag, d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
 		}
 	}
 	return nil

@@ -69,7 +69,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 	}
 	if raftState.HardState.Commit > raftState.LastIndex {
 		panic(fmt.Sprintf("%s unexpected raft log index: CommitIndex %d > LastIndex %d",
-			tag, raftState.LastIndex, raftState.HardState.Commit))
+			tag, raftState.HardState.Commit, raftState.LastIndex))
 	}
 	return &PeerStorage{
 		Engines:     engines,

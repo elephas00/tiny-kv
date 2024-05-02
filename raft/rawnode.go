@@ -233,7 +233,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		// clear messages in ready.
 		raft.msgs = make([]pb.Message, 0)
 	}
-
+	rn.Raft.RaftLog.pendingSnapshot = nil
 }
 
 // GetProgress return the Progress of this node and its peers, if this
