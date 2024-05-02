@@ -199,6 +199,10 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	offset := l.getOffset()
+	if offset == i {
+		return l.entries[0].Term, nil
+	}
 	if lastIndex := l.LastIndex(); lastIndex < i {
 		message := "entry with index %d not exist and last index is %d"
 		return 0, errors.New(fmt.Sprintf(message, i, lastIndex))
