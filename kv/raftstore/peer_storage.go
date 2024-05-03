@@ -422,7 +422,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Your Code Here (2B/2C).
 
 	// process snapshot.
-	if ready.Snapshot.Metadata != nil && ready.Snapshot.Metadata.Index > ps.applyState.TruncatedState.Index {
+	if ready.Snapshot.Metadata != nil {
 		log.Infof("ps %s, result state: %+v", ps.Tag, ps.snapState.StateType)
 		raftWB := new(engine_util.WriteBatch)
 		kvWB := new(engine_util.WriteBatch)

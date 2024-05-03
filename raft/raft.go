@@ -239,7 +239,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		log.Errorf("%s send snapshot to %d fail, err: %+v", r.nodeIdentifier(), to, err)
 		return
 	}
-	log.Infof("%s(offset %d) send snapshot to peer %d(progress: %+v)", r.nodeIdentifier(), r.RaftLog.getOffset(), to, r.Prs[to])
+	log.Errorf("%s(offset %d) send snapshot to peer %d(progress: %+v)", r.nodeIdentifier(), r.RaftLog.getOffset(), to, r.Prs[to])
 	snapshotMsg := pb.Message{
 		From:     r.id,
 		To:       to,
@@ -394,6 +394,11 @@ func (r *Raft) tickLeader() {
 			r.becomeFollower(r.Term, None)
 		}
 	} else {
+		//log.Infof("%s tick, progress: ", r.nodeIdentifier())
+		//for id, prs := range r.Prs {
+		//	log.Infof("%d -> %+v", id, prs)
+		//}
+
 		r.electionElapsed = -r.electionTimeout
 		for _, prs := range r.Prs {
 			prs.RecentActive = false
@@ -630,8 +635,8 @@ func (r *Raft) handleCandidateStep(m pb.Message) error {
 }
 
 func (r *Raft) nodeIdentifier() string {
-	pattern := "node %d (term %d, state %+v, commit %+v)"
-	return fmt.Sprintf(pattern, r.id, r.Term, r.State, r.RaftLog.committed)
+	pattern := "node %d (term %d, state %+v, commit %+v, offset:%+v)"
+	return fmt.Sprintf(pattern, r.id, r.Term, r.State, r.RaftLog.committed, r.RaftLog.getOffset())
 }
 
 func (r *Raft) sendRequestVoteToPeers() {
@@ -782,7 +787,7 @@ func (r *Raft) checkMessageNotValid(m *pb.Message) bool {
 	offset := r.RaftLog.getOffset()
 	if len(m.Entries) > 0 {
 		firstEntry := m.Entries[0]
-		if firstEntry.Index < offset {
+		if firstEntry.Index <= offset {
 			m.Entries = m.Entries[1:]
 			m.Index = firstEntry.Index
 			m.LogTerm = firstEntry.Term
@@ -828,6 +833,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.becomeFollower(r.Term, m.From)
 	// check whether the current follower contains entry that match previous log and previous term in message.
 	if r.checkMessageNotValid(&m) {
+		log.Infof("%s, lastlog %d, reject append entries message, index:%d", r.nodeIdentifier(), r.RaftLog.LastIndex(), m.Index)
 		mostApproximateIndex := r.findMostApproximateIndex(m.Index, m.LogTerm)
 		r.sendAppendResponse(m.From, mostApproximateIndex, true)
 		return
@@ -898,20 +904,7 @@ func (r *Raft) initPeers(peers []uint64) {
 
 func (r *Raft) shouldIgnoreSnapshotAndReturnAccept(meta *pb.SnapshotMetadata) bool {
 	// duplicate snapshot.
-	if r.RaftLog.pendingSnapshot != nil {
-		metadata := r.RaftLog.pendingSnapshot.Metadata
-		if metadata.Index == meta.Index && metadata.Term == meta.Term {
-			return true
-		}
-	}
-
-	if r.RaftLog.pendingSnapshot != nil {
-		metadata := r.RaftLog.pendingSnapshot.Metadata
-		if metadata.Index > meta.Index {
-			return true
-		}
-	}
-
+	// commit will never rollback.
 	if meta.Index < r.RaftLog.committed {
 		return true
 	}
@@ -936,6 +929,11 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 	// stale snapshot.
 	if r.Term > m.Term {
+		return
+	}
+
+	// when a snapshot processing, ignore new snapshot.
+	if r.RaftLog.pendingSnapshot != nil {
 		return
 	}
 

@@ -661,9 +661,8 @@ func (d *peerMsgHandler) applyRaftCmdToStateMachine(committedEnts []pb.Entry) er
 			//log.Errorf("%d: commited entries: %+v", d.PeerId(), committedEnts)
 			//log.Infof("%d applied index: %d", d.PeerId(), d.peerStorage.applyState.AppliedIndex)
 		} else {
-			log.Errorf("commited entries: %+v", committedEnts)
-			log.Panicf("%s apply index now %d , entry(index: %d, term %d) applied failed ",
-				d.Tag, d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term)
+			pattern := "%s apply index now %d , entry(index: %d, term %d) applied failed, commited entries: %+v "
+			return errors.New(fmt.Sprintf(pattern, d.Tag, d.peerStorage.applyState.AppliedIndex, entry.Index, entry.Term, committedEnts))
 		}
 	}
 	return nil
@@ -715,7 +714,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// 4. apply committed entries exec write cmd and get cmd.
 		err = d.applyRaftCmdToStateMachine(rd.CommittedEntries)
 		if err != nil {
-			log.Panicf("failed to apply entries %+v, err:%+v", rd.CommittedEntries, err)
+			log.Panicf("failed to apply entries , err:%+v, \n ready:%+v", err, rd)
 		}
 	}
 

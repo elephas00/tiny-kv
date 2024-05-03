@@ -156,6 +156,14 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// TODO: Your Code Here (2A).
+
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		ready := Ready{}
+		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+		ready.Messages = rn.Raft.msgs
+		return ready
+	}
+
 	var hardState pb.HardState
 	initialState, _, _ := rn.Raft.RaftLog.storage.InitialState()
 	if initialState.Term == rn.Raft.Term &&
@@ -193,9 +201,6 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          entries,
 		CommittedEntries: commitedEntries,
 		Messages:         msgs,
-	}
-	if rn.Raft.RaftLog.pendingSnapshot != nil {
-		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 
 	softState := &SoftState{RaftState: rn.Raft.State, Lead: rn.Raft.Lead}
