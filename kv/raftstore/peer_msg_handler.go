@@ -1,7 +1,6 @@
 package raftstore
 
 import (
-	"bytes"
 	"fmt"
 	"github.com/Connor1996/badger/y"
 	"github.com/golang/protobuf/proto"
@@ -299,7 +298,7 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		curRegion := d.Region()
 
 		splitRequest := adminRequest.AdminRequest.Split
-		if bytes.Equal(splitRequest.GetSplitKey(), curRegion.GetEndKey()) {
+		if engine_util.ExceedEndKey(splitRequest.GetSplitKey(), curRegion.GetEndKey()) {
 			regions := []*metapb.Region{}
 			d.ctx.storeMeta.Lock()
 			for _, r := range d.ctx.storeMeta.regions {

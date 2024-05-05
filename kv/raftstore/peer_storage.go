@@ -398,6 +398,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		RegionId: ps.region.Id,
 		Notifier: ch,
 		SnapMeta: snapshot.Metadata,
+		StartKey: ps.region.StartKey,
+		EndKey:   ps.region.EndKey,
 	}
 	ps.regionSched <- applyTask
 
