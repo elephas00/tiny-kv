@@ -163,7 +163,7 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 			break
 		}
 		ts := decodeTimestamp(keyWithTs)
-		if ts > txn.StartTS {
+		if ts >= txn.StartTS {
 			writeVal, err := item.Value()
 			if err != nil {
 				return nil, 0, err

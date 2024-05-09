@@ -257,6 +257,17 @@ func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnS
 		return nil, err
 	}
 	txn := mvcc.NewMvccTxn(reader, req.GetLockTs())
+	write, ts, err := txn.CurrentWrite(req.GetPrimaryKey())
+	if err != nil {
+		return nil, err
+	}
+	if write != nil {
+		if write.Kind == mvcc.WriteKindRollback {
+			return &kvrpcpb.CheckTxnStatusResponse{}, nil
+		} else {
+			return &kvrpcpb.CheckTxnStatusResponse{CommitVersion: ts}, nil
+		}
+	}
 
 	lock, err := txn.GetLock(req.GetPrimaryKey())
 	if err != nil {
@@ -264,45 +275,21 @@ func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnS
 	}
 	// lock not exists
 	if lock == nil {
-		// 1. txn has been comitted.
-		write, ts, err := txn.MostRecentWrite(req.GetPrimaryKey())
+		txn.PutWrite(req.GetPrimaryKey(), req.GetLockTs(), &mvcc.Write{
+			Kind:    mvcc.WriteKindRollback,
+			StartTS: req.GetLockTs(),
+		})
+		writes := txn.Writes()
+		err := server.storage.Write(req.GetContext(), writes)
 		if err != nil {
 			return nil, err
 		}
-		if write != nil && write.StartTS == req.GetLockTs() {
-			if write.Kind == mvcc.WriteKindRollback {
-				// rollbacked.
-				return &kvrpcpb.CheckTxnStatusResponse{}, nil
-			} else {
-				// committed.
-				return &kvrpcpb.CheckTxnStatusResponse{
-					CommitVersion: ts,
-				}, nil
-			}
-		} else {
-			// not found.
-			txn.PutWrite(req.GetPrimaryKey(), req.GetLockTs(), &mvcc.Write{
-				Kind:    mvcc.WriteKindRollback,
-				StartTS: req.GetLockTs(),
-			})
-			writes := txn.Writes()
-			err := server.storage.Write(req.GetContext(), writes)
-			if err != nil {
-				return nil, err
-			}
-			return &kvrpcpb.CheckTxnStatusResponse{
-				Action: kvrpcpb.Action_LockNotExistRollback,
-			}, nil
-		}
-
+		return &kvrpcpb.CheckTxnStatusResponse{
+			Action: kvrpcpb.Action_LockNotExistRollback,
+		}, nil
 	}
 
-	if lock.Ttl > 0 {
-		// return status.
-		return &kvrpcpb.CheckTxnStatusResponse{
-			LockTtl: lock.Ttl,
-		}, nil
-	} else {
+	if mvcc.PhysicalTime(lock.Ts)+lock.Ttl < mvcc.PhysicalTime(req.GetCurrentTs()) {
 		// timeout, abort txn.
 		txn.DeleteLock(req.GetPrimaryKey())
 		txn.DeleteValue(req.GetPrimaryKey())
@@ -314,6 +301,13 @@ func (server *Server) KvCheckTxnStatus(_ context.Context, req *kvrpcpb.CheckTxnS
 		}
 		return &kvrpcpb.CheckTxnStatusResponse{
 			Action: kvrpcpb.Action_TTLExpireRollback,
+		}, nil
+
+	} else {
+		// return status.
+		return &kvrpcpb.CheckTxnStatusResponse{
+			LockTtl: lock.Ttl,
+			Action:  kvrpcpb.Action_NoAction,
 		}, nil
 	}
 }
