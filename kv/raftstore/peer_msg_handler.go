@@ -564,6 +564,7 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 		resp = d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
 	}
 	log.Infof("%s apply conf change, region: %+v", d.Tag, d.Region())
+	d.onSchedulerHeartbeatTick()
 	d.RaftGroup.ApplyConfChange(
 		pb.ConfChange{
 			ChangeType: change.ChangeType,
@@ -603,7 +604,9 @@ func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry, kvWB *engine_util.Writ
 		}
 
 		if raftCmd.AdminRequest != nil {
-			return d.applyAdminRaftCommand(entry, &raftCmd, kvWB)
+			resp := d.applyAdminRaftCommand(entry, &raftCmd, kvWB)
+			d.onSchedulerHeartbeatTick()
+			return resp
 		}
 		return d.applyNormalRaftCommand(entry, &raftCmd, kvWB)
 	}
@@ -720,7 +723,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 5. modify in memory data, advance.
 	d.RaftGroup.Advance(rd)
 
-	if rd.SoftState != nil && d.IsLeader() {
+	if rd.SoftState != nil || state != nil {
 		d.onSchedulerHeartbeatTick()
 	}
 
