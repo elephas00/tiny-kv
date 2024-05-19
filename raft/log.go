@@ -17,7 +17,6 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -59,34 +58,38 @@ type RaftLog struct {
 }
 
 func (l *RaftLog) initCompactedLog(firstLogIndex uint64, lastLogIndex uint64, storage Storage) {
-	if snapshot, err := storage.Snapshot(); err == nil {
-		l.entries = append(l.entries, pb.Entry{
-			EntryType: pb.EntryType_EntryNormal,
-			Term:      snapshot.Metadata.Term,
-			Index:     snapshot.Metadata.Index,
-		})
-		return
-	}
-
-	if firstLogIndex < meta.RaftInitLogIndex {
-		l.entries = append(l.entries, pb.Entry{
-			EntryType: pb.EntryType_EntryNormal,
-			Term:      0,
-			Index:     0,
-		})
-		return
-	}
-
-	term, err := storage.Term(firstLogIndex - 1)
-	if err != nil {
-		log.Errorf("failed to get log %d", firstLogIndex)
-	}
-
+	//if snapshot, err := storage.Snapshot(); err == nil {
+	//	l.entries = append(l.entries, pb.Entry{
+	//		EntryType: pb.EntryType_EntryNormal,
+	//		Term:      snapshot.Metadata.Term,
+	//		Index:     snapshot.Metadata.Index,
+	//	})
+	//	return
+	//}
 	l.entries = append(l.entries, pb.Entry{
 		EntryType: pb.EntryType_EntryNormal,
-		Term:      term,
+		Term:      0,
 		Index:     firstLogIndex - 1,
 	})
+	//if firstLogIndex < meta.RaftInitLogIndex {
+	//	l.entries = append(l.entries, pb.Entry{
+	//		EntryType: pb.EntryType_EntryNormal,
+	//		Term:      0,
+	//		Index:     0,
+	//	})
+	//	return
+	//}
+	//
+	//term, err := storage.Term(firstLogIndex - 1)
+	//if err != nil {
+	//	log.Errorf("failed to get log %d", firstLogIndex)
+	//}
+	//
+	//l.entries = append(l.entries, pb.Entry{
+	//	EntryType: pb.EntryType_EntryNormal,
+	//	Term:      term,
+	//	Index:     firstLogIndex - 1,
+	//})
 
 }
 
@@ -97,21 +100,20 @@ func (l *RaftLog) initEntries(storage Storage) {
 
 	firstLogIndex, err := storage.FirstIndex()
 	if err != nil {
-		log.Errorf("failed to get firstLogIndex, err: %+v", err)
+		log.Panicf("failed to get firstLogIndex, err: %+v", err)
 	}
 	lastLogIndex, err := storage.LastIndex()
 	if err != nil {
-		log.Errorf("failed to get lastLogIndex, err: %+v", err)
+		log.Panicf("failed to get lastLogIndex, err: %+v", err)
 	}
 	l.initCompactedLog(firstLogIndex, lastLogIndex, storage)
 
 	if firstLogIndex <= lastLogIndex {
 		ents, err := storage.Entries(firstLogIndex, lastLogIndex+1)
 		if err != nil {
-			log.Errorf("failed to get stabled logs, err: %+v", err)
+			log.Panicf("failed to get stabled logs, first:%d, last:%d, err: %+v", firstLogIndex, lastLogIndex, err)
 		} else {
 			l.entries = append(l.entries, ents...)
-
 		}
 	}
 

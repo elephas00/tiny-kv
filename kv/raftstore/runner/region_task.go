@@ -179,6 +179,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 	regionState := new(rspb.RegionLocalState)
 	err = engine_util.GetMetaFromTxn(txn, meta.RegionStateKey(regionId), regionState)
 	if err != nil {
+		log.Errorf("failed to get snapkey, region id %d, state: %+v", regionId, regionState)
 		panic(err)
 	}
 	if regionState.GetState() != rspb.PeerState_Normal {

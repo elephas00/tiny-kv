@@ -259,15 +259,25 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 			StartIdx:   d.peerStorage.applyState.TruncatedState.Index,
 			EndIdx:     adminRequest.AdminRequest.CompactLog.CompactIndex,
 		}
+		if gcTask.StartIdx > gcTask.EndIdx {
+			log.Errorf("%s failed to apply compact command, entryIndex %d, gc task:%+v", d.Tag, gcTask, entry.Index)
+			return &raft_cmdpb.RaftCmdResponse{
+				Header: &raft_cmdpb.RaftResponseHeader{},
+				AdminResponse: &raft_cmdpb.AdminResponse{
+					CmdType:    raft_cmdpb.AdminCmdType_CompactLog,
+					CompactLog: &raft_cmdpb.CompactLogResponse{},
+				},
+			}
+		}
+		d.peerStorage.regionSched <- gcTask
 
 		d.peerStorage.applyState.TruncatedState.Index = adminRequest.AdminRequest.CompactLog.CompactIndex
 		d.peerStorage.applyState.TruncatedState.Term = adminRequest.AdminRequest.CompactLog.CompactTerm
 		d.LastCompactedIdx = adminRequest.AdminRequest.CompactLog.CompactIndex
+		log.Infof("%s gc task called: %+v", d.Tag, gcTask)
 		if err := kvWB.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
 			log.Panicf("%s failed to compactLog, detail %+v", d.Tag, d.peerStorage.applyState)
 		}
-		d.peerStorage.regionSched <- gcTask
-
 		return &raft_cmdpb.RaftCmdResponse{
 			Header: &raft_cmdpb.RaftResponseHeader{},
 			AdminResponse: &raft_cmdpb.AdminResponse{
@@ -295,6 +305,7 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 	}
 
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_Split {
+		log.Infof("%s executing split command, %+v", d.Tag, adminRequest.AdminRequest.Split)
 		curRegion := d.Region()
 
 		splitRequest := adminRequest.AdminRequest.Split
@@ -316,13 +327,12 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		}
 
 		curRegion.RegionEpoch.Version++
-		curRegion.RegionEpoch.ConfVer = InitEpochConfVer
+		curRegion.RegionEpoch.ConfVer++
 		newRegion := cloneRegion(curRegion)
 
 		newRegion.StartKey = splitRequest.SplitKey
 		newRegion.EndKey = curRegion.EndKey
 		newRegion.Id = splitRequest.NewRegionId
-		newRegion.RegionEpoch.ConfVer = InitEpochConfVer
 		newRegion.RegionEpoch.Version = curRegion.RegionEpoch.Version
 
 		for i := range splitRequest.NewPeerIds {
@@ -408,11 +418,6 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, change *pb.ConfChange, changePeer *raft_cmdpb.ChangePeerRequest, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
 
-	//if !d.peer.AnyNewPeerCatchUp(change.NodeId) && d.IsLeader() {
-	//	kvWB.Reset()
-	//	return ErrResp(errors.New("failed to apply conf change, because new peer not catch up yet."))
-	//}
-
 	d.peerStorage.region.RegionEpoch.ConfVer++
 	newPeer := changePeer.Peer
 	d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, newPeer)
@@ -432,7 +437,8 @@ func (d *peerMsgHandler) applyAddNodeConfChangeRaftCommand(entry *pb.Entry, chan
 	if err != nil {
 		log.Errorf("failed to set region local state, err: %+v", err)
 	}
-
+	kvWB.MustWriteToDB(d.peerStorage.Engines.Kv)
+	kvWB.Reset()
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{},
 		AdminResponse: &raft_cmdpb.AdminResponse{
@@ -538,6 +544,7 @@ func (d *peerMsgHandler) applyRemoveNodeConfChangeRaftCommand(entry *pb.Entry, c
 	d.peer.stopped = true
 	kvWB.Reset()
 	d.destroyPeer()
+	log.Infof("%s was removed ", d.Tag)
 	return nil
 }
 
@@ -564,24 +571,13 @@ func (d *peerMsgHandler) applyConfChangeRaftCommand(entry pb.Entry, change pb.Co
 		resp = d.applyRemoveNodeConfChangeRaftCommand(&entry, &change, kvWB)
 	}
 	log.Infof("%s apply conf change, region: %+v", d.Tag, d.Region())
-	d.onSchedulerHeartbeatTick()
 	d.RaftGroup.ApplyConfChange(
 		pb.ConfChange{
 			ChangeType: change.ChangeType,
 			NodeId:     change.NodeId,
 		})
+	d.onSchedulerHeartbeatTick()
 	return resp
-}
-
-func (d *peerMsgHandler) mayExecuteDestroyPeer(entry *pb.Entry, change *pb.ConfChange) bool {
-	if d.PeerId() != change.NodeId {
-		return false
-	}
-	//if d.RaftGroup.Raft.RaftLog.LastIndex() != entry.Index {
-	//	log.Errorf("%d reject to destroy, because it was restarted node. lastIndex %d, conf change index %d", d.PeerId(), d.RaftGroup.Raft.RaftLog.LastIndex(), entry.Index)
-	//	return false
-	//}
-	return true
 }
 
 func (d *peerMsgHandler) applyRaftCommand(entry pb.Entry, kvWB *engine_util.WriteBatch) *raft_cmdpb.RaftCmdResponse {
@@ -1108,6 +1104,7 @@ func (d *peerMsgHandler) handleGCPeerMsg(msg *rspb.RaftMessage) {
 	if d.MaybeDestroy() {
 		d.destroyPeer()
 	}
+	log.Infof("%s peer %s gc finished", d.Tag, msg.ToPeer)
 }
 
 // Returns `None` if the `msg` doesn't contain a snapshot or it contains a snapshot which

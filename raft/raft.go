@@ -17,9 +17,10 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"math/rand"
+
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"math/rand"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -179,7 +180,10 @@ func newRaft(c *Config) *Raft {
 	}
 
 	// Initialize other fields...
-	raft.initRaftLog(c)
+	raftLog := newLog(c.Storage)
+	raftLog.applied = max(raftLog.getOffset(), c.Applied)
+	raft.RaftLog = raftLog
+
 	raft.initPeersByConfig(c)
 	raft.initHardSate(c)
 	raft.initVotes()
@@ -221,13 +225,7 @@ func (r *Raft) initVotes() {
 func (r *Raft) initRaftLog(config *Config) {
 	raftLog := newLog(config.Storage)
 
-	if snapshot, err := config.Storage.Snapshot(); err != nil {
-		//log.Errorf("%d snapshot: %+v", r.id, snapshot)
-		raftLog.applied = config.Applied
-	} else {
-		raftLog.applied = snapshot.Metadata.Index
-
-	}
+	raftLog.applied = config.Applied
 
 	r.RaftLog = raftLog
 }
@@ -961,10 +959,6 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 	r.initPeers(meta.ConfState.Nodes)
 	r.sendAppendResponse(m.From, m.Snapshot.Metadata.Index, false)
-}
-
-func (r *Raft) compressRaftLog(index, term uint64) {
-
 }
 
 // addNode add a new node to raft group

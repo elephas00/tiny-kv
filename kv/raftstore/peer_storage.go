@@ -193,10 +193,12 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		Receiver:  ch,
 	}
 	// schedule snapshot generate task
-	ps.regionSched <- &runner.RegionTaskGen{
+	task := &runner.RegionTaskGen{
 		RegionId: ps.region.GetId(),
 		Notifier: ch,
 	}
+	log.Infof("%+v generate snapshot: %+v", ps.Tag, task)
+	ps.regionSched <- task
 
 	return snapshot, raft.ErrSnapshotTemporarilyUnavailable
 }
