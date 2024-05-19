@@ -58,38 +58,16 @@ type RaftLog struct {
 }
 
 func (l *RaftLog) initCompactedLog(firstLogIndex uint64, lastLogIndex uint64, storage Storage) {
-	//if snapshot, err := storage.Snapshot(); err == nil {
-	//	l.entries = append(l.entries, pb.Entry{
-	//		EntryType: pb.EntryType_EntryNormal,
-	//		Term:      snapshot.Metadata.Term,
-	//		Index:     snapshot.Metadata.Index,
-	//	})
-	//	return
-	//}
+	log.Infof("first %d, last %d", firstLogIndex, lastLogIndex)
+	compactedTerm, err := storage.Term(firstLogIndex - 1)
+	if err != nil {
+		log.Panicf("failed to init raft log, first index %d, last index: %d, err: %+v", firstLogIndex, lastLogIndex, err)
+	}
 	l.entries = append(l.entries, pb.Entry{
 		EntryType: pb.EntryType_EntryNormal,
-		Term:      0,
+		Term:      compactedTerm,
 		Index:     firstLogIndex - 1,
 	})
-	//if firstLogIndex < meta.RaftInitLogIndex {
-	//	l.entries = append(l.entries, pb.Entry{
-	//		EntryType: pb.EntryType_EntryNormal,
-	//		Term:      0,
-	//		Index:     0,
-	//	})
-	//	return
-	//}
-	//
-	//term, err := storage.Term(firstLogIndex - 1)
-	//if err != nil {
-	//	log.Errorf("failed to get log %d", firstLogIndex)
-	//}
-	//
-	//l.entries = append(l.entries, pb.Entry{
-	//	EntryType: pb.EntryType_EntryNormal,
-	//	Term:      term,
-	//	Index:     firstLogIndex - 1,
-	//})
 
 }
 
@@ -117,7 +95,6 @@ func (l *RaftLog) initEntries(storage Storage) {
 		}
 	}
 
-	log.Infof("first %d, last %d", firstLogIndex, lastLogIndex)
 	log.Infof("init raft log, last %d, len: %d", l.LastIndex(), len(l.entries))
 
 	l.stableTo(l.LastIndex())

@@ -804,6 +804,10 @@ func (r *Raft) checkMessageNotValid(m *pb.Message) bool {
 		}
 		return term != m.LogTerm
 	}
+	//else if m.Index == offset {
+	//	log.Infof("%s receive message that previous entry was compacted, just received it", r.nodeIdentifier())
+	//	return false
+	//}
 	return true
 
 }
