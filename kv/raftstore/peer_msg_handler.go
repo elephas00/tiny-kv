@@ -57,9 +57,16 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		EndKey:      currentRegion.GetEndKey(),
 	}
 	//log.Infof("%s send raft message %+v", d.Tag, raftMsg)
-	if msg.MsgType == pb.MessageType_MsgHeartbeat {
-		//log.Infof("%s send heart to (id %d, store %d) ", d.Tag, msg.To, d.peerCache[msg.To].StoreId)
+	if msg.MsgType == pb.MessageType_MsgSnapshot {
+		if msg.Snapshot == nil {
+			log.Panicf("%s send snapshot  to (id %d, store %d) failed, snap is nil")
+		}
+		if msg.Snapshot.Metadata == nil {
+			log.Panicf("%s send snapshot  to (id %d, store %d) failed, snap meta is nil")
+		}
+		log.Infof("%s send snapshot  to (id %d, store %d), snapmeta: %+v", d.Tag, msg.To, d.peerCache[msg.To].StoreId, msg.Snapshot.Metadata)
 	}
+
 	err := d.ctx.trans.Send(&raftMsg)
 	return err
 }
@@ -705,6 +712,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 3. send message to peers.
 	for _, msg := range rd.Messages {
 		_ = d.sendRaftMessage(msg)
+		// just ignore error of send messages.
+		//err = d.sendRaftMessage(msg)
+		//if err != nil {
+		//	log.Errorf("%s failed to send raft message, msg type: %+v, detail:%+v", d.Tag, msg.MsgType, err)
+		//}
 	}
 
 	// if apply snapshot happens, not apply raft command to state machine.

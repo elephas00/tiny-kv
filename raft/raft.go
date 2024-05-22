@@ -746,8 +746,16 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 
 	case pb.MessageType_MsgHeartbeatResponse:
 		//log.Infof("%s receive a message from %d, detail: %+v", r.nodeIdentifier(), m.From, m)
-		if m.Term == r.Term && m.Index != r.RaftLog.LastIndex() {
-			r.sendAppend(m.From)
+
+		if m.Term == r.Term && !m.Reject {
+			prs := r.Prs[m.From]
+			if m.Index > prs.Match {
+				r.updatePrs(m.From, m.Index, m.Index+1)
+				r.updateCommit()
+			}
+			if m.Index != r.RaftLog.LastIndex() {
+				r.sendAppend(m.From)
+			}
 		}
 
 	case pb.MessageType_MsgTransferLeader:
@@ -864,7 +872,7 @@ func (r *Raft) sendHeartbeatResponse(to uint64, reject bool) {
 		To:      to,
 		Term:    r.Term,
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
-		Index:   r.RaftLog.LastIndex(),
+		Index:   r.RaftLog.committed,
 		Reject:  reject,
 	}
 	r.msgs = append(r.msgs, heartbeatResponse)

@@ -129,6 +129,10 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		return buf, nil
 	}
 	// Here means we don't fetch enough entries.
+	log.Errorf("%s current entries size: %d", ps.Tag, len(buf))
+	if len(buf) > 0 {
+		log.Errorf("%s current entries first: %d, last: %d", ps.Tag, buf[0].Index, buf[len(buf)-1].Index)
+	}
 	return nil, raft.ErrUnavailable
 }
 
