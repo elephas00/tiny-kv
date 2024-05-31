@@ -71,6 +71,7 @@ func NewPeerStorage(engines *engine_util.Engines, region *metapb.Region, regionS
 		panic(fmt.Sprintf("%s unexpected raft log index: CommitIndex %d > LastIndex %d",
 			tag, raftState.HardState.Commit, raftState.LastIndex))
 	}
+	log.Infof("%s created, raftstate: %+v, applystate: %+v, region: %+v", tag, raftState, applyState, region)
 	return &PeerStorage{
 		Engines:     engines,
 		region:      region,
@@ -133,6 +134,7 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 	if len(buf) > 0 {
 		log.Errorf("%s current entries first: %d, last: %d", ps.Tag, buf[0].Index, buf[len(buf)-1].Index)
 	}
+	log.Errorf("current ps tag: %+v, region: %+v, raftstate: %+v, applystate: %+v, snapstate: %+v ", ps.Tag, ps.region, ps.raftState, ps.applyState, ps.snapState)
 	return nil, raft.ErrUnavailable
 }
 

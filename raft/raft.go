@@ -733,11 +733,11 @@ func (r *Raft) handleLeaderStep(m pb.Message) error {
 				r.updatePrs(m.From, prs.Match, min(m.Index, prs.Next-1))
 			}
 		} else {
-			match := m.Index
 			prs := r.Prs[m.From]
-			r.updatePrs(m.From, max(prs.Match, match), max(prs.Next, match+1))
-			// log.Infof("%s receive append response from %d, match index:%d", r.nodeIdentifier(), m.From, match)
-			r.updateCommit()
+			if m.Index > prs.Match {
+				r.updatePrs(m.From, m.Index, m.Index+1)
+				r.updateCommit()
+			}
 			if r.transfereeIsExist(m.From) && r.leadTransferee == m.From && r.transfereeIsMostUpdate(m.From) {
 				log.Infof("%s send timeoutnow to %d", r.nodeIdentifier(), m.From)
 				r.sendMsgTimeoutNow(m.From)

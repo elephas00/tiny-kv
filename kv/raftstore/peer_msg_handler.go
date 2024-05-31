@@ -314,11 +314,13 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 	if adminRequest.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_Split {
 		log.Infof("%s executing split command, %+v", d.Tag, adminRequest.AdminRequest.Split)
 		curRegion := d.Region()
+		// there exists a race condition,
+		// split maybe conflict with passive replicate peer
 
 		splitRequest := adminRequest.AdminRequest.Split
 		if engine_util.ExceedEndKey(splitRequest.GetSplitKey(), curRegion.GetEndKey()) {
-			regions := []*metapb.Region{}
 			d.ctx.storeMeta.Lock()
+			regions := []*metapb.Region{}
 			for _, r := range d.ctx.storeMeta.regions {
 				regions = append(regions, r)
 			}
@@ -332,7 +334,7 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 				},
 			}
 		}
-
+		d.ctx.storeMeta.Lock()
 		curRegion.RegionEpoch.Version++
 		curRegion.RegionEpoch.ConfVer++
 		newRegion := cloneRegion(curRegion)
@@ -364,10 +366,11 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		if err != nil {
 			log.Panicf("%s failed to split curRegion, error: %+v", d.Tag, err)
 		}
-		kvWB.MustWriteToDB(d.ctx.engine.Kv)
 
 		regions := []*metapb.Region{}
-		d.ctx.storeMeta.Lock()
+
+		kvWB.MustWriteToDB(d.ctx.engine.Kv)
+
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: curRegion})
 		d.ctx.storeMeta.regions[d.regionId] = curRegion
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: newRegion})
@@ -375,7 +378,6 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 		for _, r := range d.ctx.storeMeta.regions {
 			regions = append(regions, r)
 		}
-		d.ctx.storeMeta.Unlock()
 
 		newPeer, err := createPeer(d.storeID(), d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
 		if err != nil {
@@ -388,9 +390,12 @@ func (d *peerMsgHandler) applyAdminRaftCommand(entry pb.Entry, adminRequest *raf
 
 		d.ctx.router.register(newPeer)
 		err = d.ctx.router.send(newRegion.Id, message.Msg{RegionID: newRegion.Id, Type: message.MsgTypeStart})
+
 		if err != nil {
 			log.Panicf("%d failed to create curRegion %d ", d.storeID(), newRegion.Id)
 		}
+		d.ctx.storeMeta.Unlock()
+
 		kvWB.Reset()
 		d.peerStorage.clearExtraData(curRegion)
 		if d.IsLeader() {
