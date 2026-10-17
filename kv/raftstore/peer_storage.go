@@ -322,12 +322,49 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // Append the given entries to the raft log and update ps.raftState also delete log entries that will
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
-	// Your Code Here (2B).
-	for _, entry := range entries {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Find the first entry that conflicts with the existing log. Entries before
+	// that point are already persisted with the same term and can be skipped.
+	lastIndex := ps.raftState.LastIndex
+	conflict := len(entries)
+	for i, entry := range entries {
+		if entry.Index <= ps.truncatedIndex() {
+			continue
+		}
+		if entry.Index > lastIndex {
+			conflict = i
+			break
+		}
+		term, err := ps.Term(entry.Index)
+		if err != nil {
+			return err
+		}
+		if term != entry.Term {
+			conflict = i
+			break
+		}
+	}
+
+	// Delete the old suffix when a conflicting entry replaces it.
+	if conflict < len(entries) && entries[conflict].Index <= lastIndex {
+		for index := entries[conflict].Index; index <= lastIndex; index++ {
+			raftWB.DeleteMeta(meta.RaftLogKey(ps.Region().Id, index))
+		}
+	}
+
+	for _, entry := range entries[conflict:] {
 		err := raftWB.SetMeta(meta.RaftLogKey(ps.Region().Id, entry.Index), &eraftpb.Entry{Index: entry.Index, Term: entry.Term, EntryType: entry.EntryType, Data: entry.Data})
 		if err != nil {
 			return err
 		}
+	}
+	if conflict < len(entries) {
+		last := entries[len(entries)-1]
+		ps.raftState.LastIndex = last.Index
+		ps.raftState.LastTerm = last.Term
 	}
 	return nil
 }
