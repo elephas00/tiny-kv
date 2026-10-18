@@ -300,15 +300,19 @@ func (c *RaftCluster) processRegionHeartbeat(receivedRegionInfo *core.RegionInfo
 	// Your Code Here (3C).
 	c.Lock()
 	defer c.Unlock()
-	currentRegionInfo := c.core.Regions.GetRegion(receivedRegionInfo.GetID())
 	if receivedRegionInfo == nil {
 		return errors.New("error region info is stale.")
 	}
+	if receivedRegionInfo.GetMeta() == nil || receivedRegionInfo.GetRegionEpoch() == nil {
+		return errors.New("invalid region info")
+	}
+	currentRegionInfo := c.core.Regions.GetRegion(receivedRegionInfo.GetID())
 	// stale heartbeat
 	if currentRegionInfo != nil && compareRegionEpoch(receivedRegionInfo.GetRegionEpoch(), currentRegionInfo.GetRegionEpoch()) < 0 {
 		return errors.New("error region info is stale.")
 	}
 
+	c.prepareChecker.collect(receivedRegionInfo)
 	c.core.PutRegion(receivedRegionInfo)
 	meta := receivedRegionInfo.GetMeta()
 	for _, p := range meta.GetPeers() {
