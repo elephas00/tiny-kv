@@ -1,12 +1,15 @@
 package worker
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pingcap-incubator/tinykv/log"
 )
+
+var queueDepthLogEnabled = os.Getenv("TINYKV_QUEUE_DEPTH_LOG") == "1"
 
 type TaskStop struct{}
 
@@ -37,18 +40,20 @@ func (w *Worker) Start(handler TaskHandler) {
 		if s, ok := handler.(Starter); ok {
 			s.Start()
 		}
-		go func() {
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					log.Infof("worker queue depth, name=%s len=%d cap=%d", w.name, len(w.receiver), cap(w.receiver))
-				case <-w.closeCh:
-					return
+		if queueDepthLogEnabled {
+			go func() {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						log.Infof("worker queue depth, name=%s len=%d cap=%d", w.name, len(w.receiver), cap(w.receiver))
+					case <-w.closeCh:
+						return
+					}
 				}
-			}
-		}()
+			}()
+		}
 		for {
 			queueLen, queueCap := len(w.receiver), cap(w.receiver)
 			if queueLen == queueCap {
