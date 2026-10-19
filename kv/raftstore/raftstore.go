@@ -231,7 +231,7 @@ func (bs *Raftstore) start(
 		splitCheckWorker: worker.NewWorker("split-check", wg),
 		regionWorker:     worker.NewWorker("snapshot-worker", wg),
 		raftLogGCWorker:  worker.NewWorker("raft-gc-worker", wg),
-		schedulerWorker:  worker.NewWorker("scheduler-worker", wg),
+		schedulerWorker:  worker.NewWorkerWithCapacity("scheduler-worker", wg, 4096),
 		wg:               wg,
 	}
 	bs.ctx = &GlobalContext{
