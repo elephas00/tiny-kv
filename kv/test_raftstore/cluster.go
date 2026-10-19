@@ -39,6 +39,7 @@ type Cluster struct {
 	simulator       Simulator
 	cfg             *config.Config
 	baseDir         string
+	metrics         *testMetrics
 }
 
 func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simulator, cfg *config.Config) *Cluster {
@@ -50,6 +51,7 @@ func NewCluster(count int, schedulerClient *MockSchedulerClient, simulator Simul
 		simulator:       simulator,
 		cfg:             cfg,
 		baseDir:         "test-raftstore",
+		metrics:         &testMetrics{},
 	}
 }
 
@@ -184,6 +186,7 @@ func (c *Cluster) AllocPeer(storeID uint64) *metapb.Peer {
 }
 
 func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
+	c.metrics.observeRequest(reqs)
 	startTime := time.Now()
 	for i := 0; i < 10 || time.Since(startTime) < timeout; i++ {
 		region := c.GetRegion(key)
@@ -191,17 +194,28 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
 		if resp == nil {
+			c.metrics.observeError()
 			// it should be timeouted innerly
 			SleepMS(100)
 			continue
 		}
 		if resp.Header.Error != nil {
+			c.metrics.observeError()
 			SleepMS(100)
 			continue
 		}
+		c.metrics.observeResponse()
 		return resp, txn
 	}
+	c.metrics.observeTimeout()
 	panic("request timeout")
+}
+
+func (c *Cluster) reportMetrics(start time.Time) {
+	c.schedulerClient.RLock()
+	regions := len(c.schedulerClient.regionsKey)
+	c.schedulerClient.RUnlock()
+	log.Infof("%s", c.metrics.report(time.Since(start), regions))
 }
 
 func (c *Cluster) CallCommand(request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
@@ -374,18 +388,25 @@ func (c *Cluster) Scan(start, end []byte) [][]byte {
 			panic("resp.Responses[0].CmdType != raft_cmdpb.CmdType_Snap")
 		}
 		region := resp.Responses[0].GetSnap().Region
-		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
-		for iter.Seek(key); iter.Valid(); iter.Next() {
-			if engine_util.ExceedEndKey(iter.Item().Key(), end) {
-				break
+		// Keep the read transaction alive for this region scan only. The
+		// response owns txn, so make sure it is discarded even on an early
+		// return/panic while scanning.
+		func() {
+			defer txn.Discard()
+			reader := raft_storage.NewRegionReader(txn, *region)
+			iter := reader.IterCF(engine_util.CfDefault)
+			defer iter.Close()
+			for iter.Seek(key); iter.Valid(); iter.Next() {
+				if engine_util.ExceedEndKey(iter.Item().Key(), end) {
+					break
+				}
+				value, err := iter.Item().ValueCopy(nil)
+				if err != nil {
+					panic(err)
+				}
+				values = append(values, value)
 			}
-			value, err := iter.Item().ValueCopy(nil)
-			if err != nil {
-				panic(err)
-			}
-			values = append(values, value)
-		}
-		iter.Close()
+		}()
 
 		key = region.EndKey
 		if len(key) == 0 {

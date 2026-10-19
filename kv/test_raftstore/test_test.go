@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -19,6 +22,20 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("TINYKV_PPROF") == "1" {
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+		go func() {
+			log.Infof("pprof listening on http://127.0.0.1:6060")
+			if err := http.ListenAndServe("127.0.0.1:6060", nil); err != nil {
+				log.Warnf("pprof server stopped: %v", err)
+			}
+		}()
+	}
+	os.Exit(m.Run())
+}
 
 // a client runs the function f and then signals it is done
 func runClient(t *testing.T, me int, ca chan bool, fn func(me int, t *testing.T)) {
@@ -178,6 +195,21 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	cluster := NewTestCluster(nservers, cfg)
 	cluster.Start()
 	defer cluster.Shutdown()
+	metricsStart := time.Now()
+	metricsStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cluster.reportMetrics(metricsStart)
+			case <-metricsStop:
+				return
+			}
+		}
+	}()
+	defer close(metricsStop)
 
 	electionTimeout := cfg.RaftBaseTickInterval * time.Duration(cfg.RaftElectionTimeoutTicks)
 	// Wait for leader election
