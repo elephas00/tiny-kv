@@ -3,8 +3,10 @@ package raftstore
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 
@@ -64,7 +66,16 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		return errPeerNotFound
 	}
 
+	beforeLen := len(pr.peerSender)
+	start := time.Now()
+	if beforeLen == cap(pr.peerSender) {
+		log.Warnf("router peer channel full, region=%d msg_type=%d len=%d cap=%d", regionID, msg.Type, len(pr.peerSender), cap(pr.peerSender))
+	}
 	pr.peerSender <- msg
+	waited := time.Since(start)
+	if beforeLen >= cap(pr.peerSender)-1 || waited >= 100*time.Millisecond {
+		log.Infof("router peer send observed, region=%d msg_type=%d before_len=%d after_len=%d cap=%d waited=%s", regionID, msg.Type, beforeLen, len(pr.peerSender), cap(pr.peerSender), waited)
+	}
 	return nil
 }
 

@@ -165,13 +165,16 @@ func (ps *PeerStorage) FirstIndex() (uint64, error) {
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snapshot eraftpb.Snapshot
+	log.Infof("snapshot request state=%d tried=%d region=%d", ps.snapState.StateType, ps.snapTriedCnt, ps.region.GetId())
 	if ps.snapState.StateType == snap.SnapState_Generating {
 		select {
 		case s := <-ps.snapState.Receiver:
 			if s != nil {
 				snapshot = *s
+				log.Infof("snapshot notifier consumed region=%d index=%d term=%d", ps.region.GetId(), snapshot.GetMetadata().GetIndex(), snapshot.GetMetadata().GetTerm())
 			}
 		default:
+			log.Infof("snapshot notifier pending region=%d", ps.region.GetId())
 			return snapshot, raft.ErrSnapshotTemporarilyUnavailable
 		}
 		ps.snapState.StateType = snap.SnapState_Relax
@@ -516,7 +519,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	err = raftWB.WriteToDB(ps.Engines.Raft)
+	if cost := time.Since(start); cost >= 10*time.Millisecond {
+		log.Infof("slow raft WriteToDB region=%d cost=%s", ps.region.GetId(), cost)
+	}
 	return nil, err
 }
 

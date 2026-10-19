@@ -237,6 +237,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		log.Errorf("%s send snapshot to %d fail, err: %+v", r.nodeIdentifier(), to, err)
 		return
 	}
+	log.Infof("snapshot message constructed from=%d to=%d index=%d term=%d", r.id, to, snapshot.GetMetadata().GetIndex(), snapshot.GetMetadata().GetTerm())
 	log.Errorf("%s(offset %d) send snapshot to peer %d(progress: %+v)", r.nodeIdentifier(), r.RaftLog.getOffset(), to, r.Prs[to])
 	snapshotMsg := pb.Message{
 		From:     r.id,
