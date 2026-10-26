@@ -89,9 +89,9 @@ func toCFKey(cf string, key []byte) []byte {
 }
 
 type badgerIterator struct {
-	it  *badger.Iterator
-	cf  []byte
-	txn *badger.Txn
+	it       *badger.Iterator
+	cfPrefix []byte
+	txn      *badger.Txn
 }
 
 func (br *badgerReader) IterCF(cf string) engine_util.DBIterator {
@@ -99,8 +99,8 @@ func (br *badgerReader) IterCF(cf string) engine_util.DBIterator {
 	res := badgerIterator{}
 	txn := db.NewTransaction(false)
 	res.it = txn.NewIterator(badger.DefaultIteratorOptions)
-	res.cf = []byte(cf)
-	res.Seek(res.cf)
+	res.cfPrefix = []byte(cf + "_")
+	res.Seek(nil)
 	res.txn = txn
 	return &res
 }
@@ -160,7 +160,7 @@ func (it *badgerIterator) Item() engine_util.DBItem {
 
 // // Valid returns false when iteration is done.
 func (it *badgerIterator) Valid() bool {
-	return it.it.Valid()
+	return it.it.ValidForPrefix(it.cfPrefix)
 }
 
 // // Next would advance the iterator by one. Always check it.Valid() after a Next()
@@ -171,14 +171,17 @@ func (it *badgerIterator) Next() {
 
 // Seek would seek to the provided key if present. If absent, it would seek to the next smallest key
 // greater than provided.
-func (it *badgerIterator) Seek([]byte) {
-	it.it.Seek(it.cf)
+func (it *badgerIterator) Seek(key []byte) {
+	fullKey := make([]byte, 0, len(it.cfPrefix)+len(key))
+	fullKey = append(fullKey, it.cfPrefix...)
+	fullKey = append(fullKey, key...)
+	it.it.Seek(fullKey)
 }
 
 // Close the iterator
 func (it *badgerIterator) Close() {
 	it.it.Close()
-	it.txn.Commit()
+	it.txn.Discard()
 
 }
 

@@ -3,6 +3,7 @@ package mvcc
 import (
 	"bytes"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"math"
 )
 
 // Scanner is used for reading multiple sequential key/value pairs from the storage layer. It is aware of the implementation
@@ -19,7 +20,7 @@ type Scanner struct {
 func NewScanner(startKey []byte, txn *MvccTxn) *Scanner {
 	// Your Code Here (4C).
 	iterator := txn.Reader.IterCF(engine_util.CfDefault)
-	iterator.Seek(startKey)
+	iterator.Seek(EncodeKey(startKey, math.MaxUint64))
 	return &Scanner{startKey: startKey, txn: txn, it: iterator}
 }
 

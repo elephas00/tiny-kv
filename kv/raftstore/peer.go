@@ -352,11 +352,19 @@ func (p *peer) HeartbeatScheduler(ch chan<- worker.Task) {
 	if err != nil {
 		return
 	}
-	ch <- &runner.SchedulerRegionHeartbeatTask{
+	task := &runner.SchedulerRegionHeartbeatTask{
 		Region:          clonedRegion,
 		Peer:            p.Meta,
 		PendingPeers:    p.CollectPendingPeers(),
 		ApproximateSize: p.ApproximateSize,
+	}
+	// Heartbeats are periodic state reports. If the scheduler queue is full,
+	// skip this report rather than blocking the raft worker; a later heartbeat
+	// will report the current state again.
+	select {
+	case ch <- task:
+	default:
+		log.Warnf("drop scheduler heartbeat, region=%d scheduler queue full", p.regionId)
 	}
 }
 

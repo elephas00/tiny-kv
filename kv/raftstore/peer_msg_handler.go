@@ -64,7 +64,7 @@ func (d *peerMsgHandler) sendRaftMessage(msg pb.Message) error {
 		if msg.Snapshot.Metadata == nil {
 			log.Panicf("%s send snapshot  to (id %d, store %d) failed, snap meta is nil")
 		}
-		log.Infof("%s send snapshot  to (id %d, store %d), snapmeta: %+v", d.Tag, msg.To, d.peerCache[msg.To].StoreId, msg.Snapshot.Metadata)
+		log.Infof("SNAPSHOT_SEND region=%d index=%d term=%d peer=%d store=%d", d.regionId, msg.Snapshot.Metadata.GetIndex(), msg.Snapshot.Metadata.GetTerm(), msg.To, d.peerCache[msg.To].StoreId)
 	}
 
 	err := d.ctx.trans.Send(&raftMsg)

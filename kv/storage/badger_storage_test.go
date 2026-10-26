@@ -48,6 +48,8 @@ func TestBadgerStorage_Read(t *testing.T) {
 	}
 
 	storageInstance := storage.NewBadgerStorage(conf)
+	err := storageInstance.Start()
+	require.NoError(t, err)
 	defer func() {
 		err := storageInstance.Stop()
 		if err != nil {

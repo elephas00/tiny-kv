@@ -72,7 +72,9 @@ type client struct {
 	checkLeaderCh chan struct{}
 
 	receiveRegionHeartbeatCh chan *schedulerpb.RegionHeartbeatResponse
-	regionCh                 chan *schedulerpb.RegionHeartbeatRequest
+	regionNotifyCh           chan struct{}
+	regionMu                 sync.Mutex
+	pendingRegions           map[uint64]*schedulerpb.RegionHeartbeatRequest
 	pendingRequest           *schedulerpb.RegionHeartbeatRequest
 
 	wg     sync.WaitGroup
@@ -102,7 +104,8 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 		ctx:                      ctx,
 		cancel:                   cancel,
 		tag:                      tag,
-		regionCh:                 make(chan *schedulerpb.RegionHeartbeatRequest, 64),
+		regionNotifyCh:           make(chan struct{}, 1),
+		pendingRegions:           make(map[uint64]*schedulerpb.RegionHeartbeatRequest),
 	}
 	c.connMu.clientConns = make(map[string]*grpc.ClientConn)
 
@@ -355,14 +358,20 @@ func (c *client) getNextHeartbeatRequest(ctx context.Context) (*schedulerpb.Regi
 		return req, true
 	}
 
-	select {
-	case <-ctx.Done():
-		return nil, false
-	case request, ok := <-c.regionCh:
-		if !ok {
-			return nil, false
+	for {
+		c.regionMu.Lock()
+		for regionID, request := range c.pendingRegions {
+			delete(c.pendingRegions, regionID)
+			c.regionMu.Unlock()
+			return request, true
 		}
-		return request, true
+		c.regionMu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-c.regionNotifyCh:
+		}
 	}
 }
 
@@ -537,7 +546,21 @@ func (c *client) StoreHeartbeat(ctx context.Context, stats *schedulerpb.StoreSta
 }
 
 func (c *client) RegionHeartbeat(request *schedulerpb.RegionHeartbeatRequest) error {
-	c.regionCh <- request
+	if request == nil || request.GetRegion() == nil {
+		return nil
+	}
+	regionID := request.GetRegion().GetId()
+	c.regionMu.Lock()
+	_, existed := c.pendingRegions[regionID]
+	c.pendingRegions[regionID] = request
+	c.regionMu.Unlock()
+	if existed {
+		return nil
+	}
+	select {
+	case c.regionNotifyCh <- struct{}{}:
+	default:
+	}
 	return nil
 }
 

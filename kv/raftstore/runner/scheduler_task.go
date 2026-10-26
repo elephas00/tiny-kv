@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"time"
 
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
@@ -13,6 +14,14 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/schedulerpb"
 	"github.com/shirou/gopsutil/v3/disk"
 )
+
+const slowSchedulerTaskThreshold = 10 * time.Millisecond
+
+func logSlowSchedulerTask(kind string, start time.Time) {
+	if cost := time.Since(start); cost >= slowSchedulerTaskThreshold {
+		log.Infof("slow scheduler task kind=%s cost=%s", kind, cost)
+	}
+}
 
 type SchedulerAskSplitTask struct {
 	Region   *metapb.Region
@@ -85,6 +94,8 @@ func (r *SchedulerTaskHandler) onRegionHeartbeatResponse(resp *schedulerpb.Regio
 }
 
 func (r *SchedulerTaskHandler) onAskSplit(t *SchedulerAskSplitTask) {
+	start := time.Now()
+	defer logSlowSchedulerTask("ask-split", start)
 	resp, err := r.SchedulerClient.AskSplit(context.TODO(), t.Region)
 	if err != nil {
 		log.Error(err)
@@ -103,6 +114,8 @@ func (r *SchedulerTaskHandler) onAskSplit(t *SchedulerAskSplitTask) {
 }
 
 func (r *SchedulerTaskHandler) onHeartbeat(t *SchedulerRegionHeartbeatTask) {
+	start := time.Now()
+	defer logSlowSchedulerTask("region-heartbeat", start)
 	var size int64
 	if t.ApproximateSize != nil {
 		size = int64(*t.ApproximateSize)
@@ -118,6 +131,8 @@ func (r *SchedulerTaskHandler) onHeartbeat(t *SchedulerRegionHeartbeatTask) {
 }
 
 func (r *SchedulerTaskHandler) onStoreHeartbeat(t *SchedulerStoreHeartbeatTask) {
+	start := time.Now()
+	defer logSlowSchedulerTask("store-heartbeat", start)
 	diskStat, err := disk.Usage(t.Path)
 	if err != nil {
 		log.Error(err)

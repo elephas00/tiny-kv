@@ -8,6 +8,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/tsoutil"
+	"math"
 )
 
 // KeyError is a wrapper type so we can implement the `error` interface.
@@ -89,7 +90,7 @@ func (txn *MvccTxn) DeleteLock(key []byte) {
 func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	// Your Code Here (4A).
 	iterator := txn.Reader.IterCF(engine_util.CfWrite)
-	iterator.Seek(key)
+	iterator.Seek(EncodeKey(key, math.MaxUint64))
 	for ; iterator.Valid(); iterator.Next() {
 		item := iterator.Item()
 		keyWithTs := item.Key()
